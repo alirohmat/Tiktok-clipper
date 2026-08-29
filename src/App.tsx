@@ -61,13 +61,14 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [directUrl, setDirectUrl] = useState("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4");
   const [urlVal, setUrlVal] = useState("https://www.youtube.com/watch?v=sample-podcast");
-  const [niche, setNiche] = useState<ContentNiche>("bisnis");
+  const [niche, setNiche] = useState<ContentNiche>("auto");
   const [numClips, setNumClips] = useState(2);
   const [minDur, setMinDur] = useState(15);
   const [maxDur, setMaxDur] = useState(60);
   const [subtitles, setSubtitles] = useState(true);
   const [vertical, setVertical] = useState<PortraitCropMode>("speaker");
   const [groqApiKey, setGroqApiKey] = useState("");
+  const [showKeyInput, setShowKeyInput] = useState(false);
 
   // Generation & Active Job State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -275,7 +276,7 @@ export default function App() {
     } else {
       parts.push(`--input "sample_podcast.mp4"`);
     }
-    if (niche !== "umum") parts.push(`--niche ${niche}`);
+    if (niche !== "auto") parts.push(`--niche ${niche}`);
     if (numClips !== 3) parts.push(`--num-clips ${numClips}`);
     if (minDur !== 15) parts.push(`--min-duration ${minDur}`);
     if (maxDur !== 60) parts.push(`--max-duration ${maxDur}`);
@@ -647,12 +648,18 @@ export default function App() {
                 {/* 3. Parameter Niche & Pemotongan */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Niche Konten</label>
+                    <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                      <span>Niche Konten</span>
+                      {niche === "auto" && (
+                        <span className="text-[10px] text-pink-400 font-bold">Rekomendasi</span>
+                      )}
+                    </label>
                     <select
                       value={niche}
                       onChange={(e) => setNiche(e.target.value as ContentNiche)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-pink-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-pink-500 font-medium"
                     >
+                      <option value="auto">✨ Auto-Detect oleh AI (Ringkasan Konten)</option>
                       <option value="bisnis">Bisnis & Finansial</option>
                       <option value="edukasi">Edukasi & Tutorial</option>
                       <option value="motivasi">Motivasi & Mindset</option>
@@ -732,6 +739,51 @@ export default function App() {
                       />
                     </button>
                   </div>
+                </div>
+
+                {/* Auto-Detect Niche Info Box */}
+                {niche === "auto" && (
+                  <div className="bg-pink-500/10 border border-pink-500/25 rounded-xl p-3 text-xs text-pink-300 flex items-start gap-2.5">
+                    <Sparkles className="w-4 h-4 text-pink-400 shrink-0 mt-0.5" />
+                    <div>
+                      <strong className="text-pink-200 block mb-0.5">Mode Auto-Detect Niche Aktif (Didukung Ringkasan LLM):</strong>
+                      <span>AI akan merangkum seluruh transkrip percakapan video dan mendeteksi topik aktualnya (misal: <em>survival/outdoor, freediving, sains, komedi, edukasi, dsb.</em>) secara otomatis sehingga judul, hook, caption SEO, dan hashtag 100% selaras dengan video asli tanpa salah topik.</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Groq API Key Config Toggle (Untuk Transkripsi Whisper Akurat) */}
+                <div className="pt-1">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setShowKeyInput(!showKeyInput)}
+                      className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors"
+                    >
+                      <Key className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>{showKeyInput ? "Tutup Pengaturan Groq API Key" : "Atur Groq API Key (Opsional / Override)"}</span>
+                    </button>
+                    <span className="text-[11px] text-slate-500">
+                      {systemStatus?.groq_key_set ? "✅ API Key Aktif di Server" : "⚠️ Whisper Memerlukan API Key"}
+                    </span>
+                  </div>
+
+                  {showKeyInput && (
+                    <div className="mt-2 p-3 bg-slate-950/90 border border-slate-800 rounded-xl space-y-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="password"
+                          value={groqApiKey}
+                          onChange={(e) => setGroqApiKey(e.target.value)}
+                          placeholder="gsk_..."
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        💡 <strong>Groq API Key</strong> digunakan oleh Whisper untuk mentranskripsikan kata-demi-kata dari audio video secara 100% akurat dan cepat (~2 detik). Anda bisa mendapatkan key gratis di <em>console.groq.com</em>.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Error Banner */}

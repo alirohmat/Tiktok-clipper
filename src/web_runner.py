@@ -36,7 +36,7 @@ def emit_event(event_type: str, data: dict):
 def run_pipeline(
     input_source: str,
     output_dir: Path,
-    niche: str = "bisnis",
+    niche: str = "auto",
     min_duration: int = 15,
     max_duration: int = 60,
     num_clips: int = 3,
@@ -47,6 +47,7 @@ def run_pipeline(
 ):
     if groq_api_key and groq_api_key.strip():
         Settings.GROQ_API_KEY = groq_api_key.strip()
+        os.environ["GROQ_API_KEY"] = groq_api_key.strip()
 
     run_start_time = time.time()
     run_id = output_dir.name
@@ -200,7 +201,7 @@ def main():
     parser = argparse.ArgumentParser(description="TikTok Clipper Web Runner")
     parser.add_argument("--input", required=True, help="Path file video lokal atau URL")
     parser.add_argument("--output-dir", required=True, help="Direktori output")
-    parser.add_argument("--niche", default="bisnis", help="Niche konten")
+    parser.add_argument("--niche", default="auto", help="Niche konten (auto / bisnis / edukasi / motivasi / teknologi / umum)")
     parser.add_argument("--min-duration", type=int, default=15, help="Durasi minimal detik")
     parser.add_argument("--max-duration", type=int, default=60, help="Durasi maksimal detik")
     parser.add_argument("--num-clips", type=int, default=3, help="Jumlah klip")

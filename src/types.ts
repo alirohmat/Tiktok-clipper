@@ -3,6 +3,7 @@ export type PortraitCropMode = "speaker" | "split" | "auto" | "crop" | "pad" | "
 export type SourceInputType = "direct" | "upload" | "url" | "sample";
 
 export type ContentNiche =
+  | "auto"
   | "bisnis"
   | "edukasi"
   | "motivasi"

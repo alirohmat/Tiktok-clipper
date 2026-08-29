@@ -34,7 +34,7 @@ class Settings:
     DEFAULT_MIN_DURATION: int = int(os.getenv("DEFAULT_MIN_DURATION", "15"))
     DEFAULT_MAX_DURATION: int = int(os.getenv("DEFAULT_MAX_DURATION", "60"))
     DEFAULT_NUM_CLIPS: int = int(os.getenv("DEFAULT_NUM_CLIPS", "3"))
-    DEFAULT_NICHE: str = os.getenv("DEFAULT_NICHE", "umum").strip()
+    DEFAULT_NICHE: str = os.getenv("DEFAULT_NICHE", "auto").strip()
 
     # Lokasi Berkas Cookies YouTube / Platform Eksternal (jika ada)
     COOKIES_FILE: Optional[Path] = Path(os.getenv("COOKIES_FILE", "cookies.txt")) if os.getenv("COOKIES_FILE") or Path("cookies.txt").exists() else None
