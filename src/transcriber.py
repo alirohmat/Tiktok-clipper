@@ -341,6 +341,7 @@ def _transcribe_single_audio_file(
                 transcription = client.audio.transcriptions.create(
                     file=(file_path.name, file_obj.read(), mime_type),
                     model=model,
+                    temperature=0,
                     response_format="verbose_json",
                     timestamp_granularities=["segment"]
                 )
@@ -450,7 +451,7 @@ def transcribe_audio(
         return transcript_data, None
 
     output_transcript_dir.mkdir(parents=True, exist_ok=True)
-    client = Groq(api_key=Settings.GROQ_API_KEY, base_url=Settings.GROQ_BASE_URL)
+    client = Settings.get_groq_client()
 
     file_size = audio_path.stat().st_size if audio_path.exists() else 0
     file_size_mb = file_size / (1024 * 1024)

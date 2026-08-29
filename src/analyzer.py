@@ -398,7 +398,7 @@ def analyze_transcript(
         return validated, None
 
     chunks = chunk_segments(transcript.segments)
-    client = Groq(api_key=Settings.GROQ_API_KEY, base_url=Settings.GROQ_BASE_URL)
+    client = Settings.get_groq_client()
 
     all_candidates: List[ClipCandidate] = []
     clips_per_chunk = max(2, (num_clips // len(chunks)) + 2)

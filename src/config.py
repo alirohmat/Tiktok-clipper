@@ -17,7 +17,7 @@ class Settings:
 
     # Konfigurasi Groq API
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
-    GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
+    GROQ_BASE_URL: Optional[str] = os.getenv("GROQ_BASE_URL", "").strip() or None
     GROQ_WHISPER_MODEL: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip()
     GROQ_LLM_MODEL: str = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b").strip()
 
@@ -51,7 +51,7 @@ class Settings:
         """Memuat ulang file .env jika ada perubahan konfigurasi."""
         load_dotenv(override=True)
         cls.GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-        cls.GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
+        cls.GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "").strip() or None
         cls.GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip()
         cls.GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b").strip()
         cls.FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg").strip()
@@ -59,6 +59,19 @@ class Settings:
         cls.OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
         cls.CACHE_DIR = Path(os.getenv("CACHE_DIR", "cache"))
         cls.LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
+
+    @classmethod
+    def get_groq_client(cls):
+        """Membuat instance Groq client resmi tanpa duplikasi path /openai/v1."""
+        from groq import Groq
+        key = cls.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")
+        if cls.GROQ_BASE_URL:
+            raw_url = cls.GROQ_BASE_URL.strip().rstrip("/")
+            if raw_url.endswith("/openai/v1"):
+                raw_url = raw_url[:-10]
+            if raw_url and raw_url != "https://api.groq.com":
+                return Groq(api_key=key, base_url=raw_url)
+        return Groq(api_key=key)
 
 
 # Pastikan folder output, cache, dan logs langsung dibuat saat diimpor
