@@ -11,6 +11,9 @@ import os
 import re
 import subprocess
 import time
+import uuid
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Optional, Tuple, List, Callable
 from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
@@ -320,6 +323,71 @@ def split_audio_into_chunks(
     return chunks
 
 
+def _transcribe_via_raw_rest(
+    file_path: Path,
+    api_key: str,
+    model: str = "whisper-large-v3"
+) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Melakukan request multipart form-data langsung ke endpoint resmi https://api.groq.com/openai/v1/audio/transcriptions
+    menggunakan urllib standar (menghindari segala potensi bug routing base_url pada SDK).
+    """
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+    suffix = file_path.suffix.lower()
+    mime_type = "audio/mp4" if suffix in [".m4a", ".mp4"] else ("audio/mpeg" if suffix == ".mp3" else "audio/wav")
+
+    body = bytearray()
+
+    def add_field(field_name: str, field_val: str):
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode("utf-8"))
+        body.extend(f"{field_val}\r\n".encode("utf-8"))
+
+    add_field("model", model)
+    add_field("temperature", "0")
+    add_field("response_format", "verbose_json")
+    add_field("timestamp_granularities[]", "segment")
+
+    # Tambahkan file audio
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'.encode("utf-8"))
+    body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"))
+    with open(file_path, "rb") as f:
+        body.extend(f.read())
+    body.extend(b"\r\n")
+
+    # Boundary penutup
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req = urllib.request.Request(url, data=bytes(body), method="POST")
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("User-Agent", "TikTokClipperStudio/2.0")
+
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            resp_bytes = resp.read()
+            data = json.loads(resp_bytes.decode("utf-8"))
+            return {
+                "text": data.get("text", "").strip(),
+                "segments": data.get("segments", []) or [],
+                "language": data.get("language", "id") or "id",
+                "duration": float(data.get("duration", 0.0) or 0.0)
+            }, None
+    except urllib.error.HTTPError as http_err:
+        err_body = http_err.read().decode("utf-8", errors="ignore")
+        logger.error(f"Raw REST HTTP Error {http_err.code}: {err_body}")
+        if http_err.code == 429:
+            return None, "Terkena batasan laju Groq API (Rate Limit 429). Tunggu 1 menit lalu coba lagi."
+        if http_err.code == 413 or "too large" in err_body.lower():
+            return None, "REQUEST_TOO_LARGE"
+        return None, f"Groq Whisper HTTP Error {http_err.code}: {err_body[:200]}"
+    except Exception as ex:
+        logger.error(f"Raw REST Network Error: {ex}")
+        return None, f"Gagal menghubungi Groq API via direct REST: {ex}"
+
+
 def _transcribe_single_audio_file(
     client: Groq,
     file_path: Path,
@@ -328,10 +396,18 @@ def _transcribe_single_audio_file(
 ) -> Tuple[Optional[dict], Optional[str]]:
     """
     Mengirim satu file audio ke Groq Whisper API dengan penanganan rate limit & retry otomatis.
+    Jika terjadi kendala pada SDK (misal error 404 URL ganda), otomatis beralih ke direct REST API.
     """
     backoff_delays = [2, 5, 10]
     suffix = file_path.suffix.lower()
     mime_type = "audio/mpeg" if suffix == ".mp3" else ("audio/mp4" if suffix in [".m4a", ".mp4"] else "audio/wav")
+    api_key = Settings.GROQ_API_KEY or getattr(client, "api_key", "") or os.environ.get("GROQ_API_KEY", "")
+
+    # Pastikan GROQ_BASE_URL dibersihkan dari environment saat eksekusi
+    if "GROQ_BASE_URL" in os.environ:
+        base_val = os.environ.get("GROQ_BASE_URL", "")
+        if "api.groq.com" in base_val or base_val.endswith("/openai/v1"):
+            os.environ.pop("GROQ_BASE_URL", None)
 
     for attempt in range(max_retries):
         try:
@@ -372,8 +448,24 @@ def _transcribe_single_audio_file(
                 logger.warning(f"File {file_path.name} terlalu besar untuk Groq Whisper (HTTP 413 / REQUEST_TOO_LARGE).")
                 return None, "REQUEST_TOO_LARGE"
 
+            # Jika terjadi error 404 URL routing atau SDK path bug, gunakan fallback direct REST
+            if "404" in err_str or "Unknown request URL" in err_str or "/openai/v1/openai/v1" in err_str:
+                logger.warning("Mendeteksi Groq SDK URL routing issue (404). Mengalihkan langsung ke Direct REST request...")
+                if api_key:
+                    rest_res, rest_err = _transcribe_via_raw_rest(file_path, api_key, model)
+                    if rest_res:
+                        return rest_res, None
+                    if rest_err == "REQUEST_TOO_LARGE":
+                        return None, "REQUEST_TOO_LARGE"
+
             logger.error(f"Groq API Error: {api_err}")
             if attempt == max_retries - 1:
+                # Coba sekali lagi via Direct REST sebelum menyerah
+                if api_key:
+                    logger.info("Percobaan terakhir via Direct REST...")
+                    rest_res, rest_err = _transcribe_via_raw_rest(file_path, api_key, model)
+                    if rest_res:
+                        return rest_res, None
                 return None, f"Gagal menghubungi Groq Whisper API: {err_str[:200]}"
             time.sleep(2)
 
@@ -383,8 +475,19 @@ def _transcribe_single_audio_file(
                 logger.warning(f"File {file_path.name} memicu REQUEST_TOO_LARGE: {err_str}")
                 return None, "REQUEST_TOO_LARGE"
 
+            if "404" in err_str or "Unknown request URL" in err_str or "/openai/v1/openai/v1" in err_str:
+                logger.warning("Mendeteksi URL error pada Exception. Mengalihkan ke Direct REST request...")
+                if api_key:
+                    rest_res, rest_err = _transcribe_via_raw_rest(file_path, api_key, model)
+                    if rest_res:
+                        return rest_res, None
+
             logger.exception("Error saat transkripsi chunk")
             if attempt == max_retries - 1:
+                if api_key:
+                    rest_res, rest_err = _transcribe_via_raw_rest(file_path, api_key, model)
+                    if rest_res:
+                        return rest_res, None
                 return None, f"Kesalahan saat transkripsi: {err_str}"
             time.sleep(2)
 

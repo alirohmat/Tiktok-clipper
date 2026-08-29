@@ -11,13 +11,20 @@ from dotenv import load_dotenv
 # Muat file .env jika ada
 load_dotenv()
 
+# Bersihkan GROQ_BASE_URL dari environment jika mengarah ke domain Groq resmi
+# Ini mencegah library `groq` SDK menduplikasi jalur '/openai/v1/openai/v1'
+if "GROQ_BASE_URL" in os.environ:
+    current_base = os.environ.get("GROQ_BASE_URL", "").strip()
+    if "api.groq.com" in current_base or current_base.endswith("/openai/v1") or not current_base:
+        os.environ.pop("GROQ_BASE_URL", None)
+
 
 class Settings:
     """Kelas penampung konfigurasi global aplikasi."""
 
     # Konfigurasi Groq API
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
-    GROQ_BASE_URL: Optional[str] = os.getenv("GROQ_BASE_URL", "").strip() or None
+    GROQ_BASE_URL: Optional[str] = None
     GROQ_WHISPER_MODEL: str = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip()
     GROQ_LLM_MODEL: str = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b").strip()
 
@@ -50,8 +57,12 @@ class Settings:
     def reload_env(cls) -> None:
         """Memuat ulang file .env jika ada perubahan konfigurasi."""
         load_dotenv(override=True)
+        if "GROQ_BASE_URL" in os.environ:
+            current_base = os.environ.get("GROQ_BASE_URL", "").strip()
+            if "api.groq.com" in current_base or current_base.endswith("/openai/v1") or not current_base:
+                os.environ.pop("GROQ_BASE_URL", None)
         cls.GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-        cls.GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "").strip() or None
+        cls.GROQ_BASE_URL = None
         cls.GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip()
         cls.GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b").strip()
         cls.FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg").strip()
@@ -64,13 +75,13 @@ class Settings:
     def get_groq_client(cls):
         """Membuat instance Groq client resmi tanpa duplikasi path /openai/v1."""
         from groq import Groq
+        # Pastikan GROQ_BASE_URL tidak tertinggal di os.environ
+        if "GROQ_BASE_URL" in os.environ:
+            current_base = os.environ.get("GROQ_BASE_URL", "").strip()
+            if "api.groq.com" in current_base or current_base.endswith("/openai/v1") or not current_base:
+                os.environ.pop("GROQ_BASE_URL", None)
+        
         key = cls.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")
-        if cls.GROQ_BASE_URL:
-            raw_url = cls.GROQ_BASE_URL.strip().rstrip("/")
-            if raw_url.endswith("/openai/v1"):
-                raw_url = raw_url[:-10]
-            if raw_url and raw_url != "https://api.groq.com":
-                return Groq(api_key=key, base_url=raw_url)
         return Groq(api_key=key)
 
 

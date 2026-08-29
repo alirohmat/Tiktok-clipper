@@ -49,6 +49,12 @@ def run_pipeline(
         Settings.GROQ_API_KEY = groq_api_key.strip()
         os.environ["GROQ_API_KEY"] = groq_api_key.strip()
 
+    # Bersihkan GROQ_BASE_URL dari environment
+    if "GROQ_BASE_URL" in os.environ:
+        current_base = os.environ.get("GROQ_BASE_URL", "").strip()
+        if "api.groq.com" in current_base or current_base.endswith("/openai/v1") or not current_base:
+            os.environ.pop("GROQ_BASE_URL", None)
+
     run_start_time = time.time()
     run_id = output_dir.name
     output_dir.mkdir(parents=True, exist_ok=True)
