@@ -1,0 +1,6 @@
+{
+  "name": "TikTok Clipper",
+  "description": "Aplikasi CLI & Web Companion Python untuk mengubah video panjang menjadi klip TikTok pendek otomatis dengan AI dan strategi TikTok 2026.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
