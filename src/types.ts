@@ -1,6 +1,6 @@
 export type PortraitCropMode = "speaker" | "split" | "auto" | "crop" | "pad" | "off";
 
-export type SourceInputType = "upload" | "url" | "sample";
+export type SourceInputType = "direct" | "upload" | "url" | "sample";
 
 export type ContentNiche =
   | "bisnis"

@@ -36,6 +36,9 @@ import {
   History,
   Zap,
   Loader2,
+  Link as LinkIcon,
+  Radio,
+  FileVideo,
 } from "lucide-react";
 import {
   PortraitCropMode,
@@ -54,8 +57,9 @@ export default function App() {
   >("studio");
 
   // Form State
-  const [sourceType, setSourceType] = useState<SourceInputType>("sample");
+  const [sourceType, setSourceType] = useState<SourceInputType>("direct");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [directUrl, setDirectUrl] = useState("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4");
   const [urlVal, setUrlVal] = useState("https://www.youtube.com/watch?v=sample-podcast");
   const [niche, setNiche] = useState<ContentNiche>("bisnis");
   const [numClips, setNumClips] = useState(2);
@@ -211,6 +215,13 @@ export default function App() {
           return;
         }
         formData.append("videoFile", selectedFile);
+      } else if (sourceType === "direct") {
+        if (!directUrl.trim()) {
+          setErrorMessage("Silakan masukkan tautan direct podcast MP4 / stream video.");
+          setIsGenerating(false);
+          return;
+        }
+        formData.append("url", directUrl.trim());
       } else if (sourceType === "url") {
         if (!urlVal.trim()) {
           setErrorMessage("Silakan masukkan tautan URL video.");
@@ -257,6 +268,8 @@ export default function App() {
     const parts = ["python main.py"];
     if (sourceType === "upload") {
       parts.push(`--input "${selectedFile?.name || "video.mp4"}"`);
+    } else if (sourceType === "direct") {
+      parts.push(`--url "${directUrl || "https://example.com/podcast.mp4"}"`);
     } else if (sourceType === "url") {
       parts.push(`--url "${urlVal || "https://..."}"`);
     } else {
@@ -390,7 +403,26 @@ export default function App() {
                   </label>
 
                   {/* Tabs Pemilih Sumber */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    <button
+                      id="source-btn-direct"
+                      type="button"
+                      onClick={() => setSourceType("direct")}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        sourceType === "direct"
+                          ? "bg-emerald-500/15 border-emerald-500 text-emerald-300 ring-1 ring-emerald-500/30"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
+                        <LinkIcon className="w-4 h-4 text-emerald-400" />
+                        Tautan Direct Video Podcast
+                      </div>
+                      <p className="text-[11px] text-slate-400 line-clamp-2">
+                        Link langsung .mp4, Google Drive, Dropbox, atau CDN Podcast.
+                      </p>
+                    </button>
+
                     <button
                       id="source-btn-sample"
                       type="button"
@@ -403,10 +435,10 @@ export default function App() {
                     >
                       <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
                         <Sparkles className="w-4 h-4 text-pink-400" />
-                        Video Sampel Podcast (1-Click)
+                        Sampel Podcast (1-Click)
                       </div>
-                      <p className="text-[11px] text-slate-400">
-                        Uji coba instan dengan podcast 2 pembicara (Host & Guest) tanpa perlu upload.
+                      <p className="text-[11px] text-slate-400 line-clamp-2">
+                        Uji coba instan podcast 2 pembicara tanpa perlu upload file.
                       </p>
                     </button>
 
@@ -422,10 +454,10 @@ export default function App() {
                     >
                       <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
                         <UploadCloud className="w-4 h-4 text-cyan-400" />
-                        Unggah File Lokal (MP4/MOV)
+                        Unggah File Lokal (MP4)
                       </div>
-                      <p className="text-[11px] text-slate-400">
-                        Pilih video dari komputer/perangkat Anda untuk dipotong.
+                      <p className="text-[11px] text-slate-400 line-clamp-2">
+                        Pilih file video MP4/MOV dari komputer Anda.
                       </p>
                     </button>
 
@@ -441,15 +473,94 @@ export default function App() {
                     >
                       <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
                         <ExternalLink className="w-4 h-4 text-purple-400" />
-                        Tautan Video (URL / YouTube)
+                        Tautan Media (YouTube / Web)
                       </div>
-                      <p className="text-[11px] text-slate-400">
-                        Unduh otomatis dengan yt-dlp dari YouTube, TikTok, dll.
+                      <p className="text-[11px] text-slate-400 line-clamp-2">
+                        Unduh otomatis dengan yt-dlp dari YouTube/TikTok.
                       </p>
                     </button>
                   </div>
 
                   {/* Input Source Body */}
+                  {sourceType === "direct" && (
+                    <div className="mt-2 space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                            <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                            URL Direct File Video Podcast (.mp4 / stream / CDN)
+                          </label>
+                          <span className="text-[11px] text-emerald-400 font-mono">Bypass Bot Verification</span>
+                        </div>
+                        <input
+                          type="text"
+                          value={directUrl}
+                          onChange={(e) => setDirectUrl(e.target.value)}
+                          placeholder="https://domain.com/podcast-video.mp4 atau link direct storage"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
+                        />
+                      </div>
+
+                      {/* Presets Direct Podcast Videos */}
+                      <div className="space-y-1.5">
+                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                          Pilihan Cepat: Contoh Link Direct Video Podcast
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          {[
+                            {
+                              title: "Podcast Bisnis & Strategi",
+                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+                              desc: "Direct MP4 • 1080p",
+                              nicheTarget: "bisnis" as ContentNiche,
+                            },
+                            {
+                              title: "Podcast Teknologi & AI",
+                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+                              desc: "Direct MP4 • Fast CDN",
+                              nicheTarget: "teknologi" as ContentNiche,
+                            },
+                            {
+                              title: "Podcast Edukasi & Sains",
+                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
+                              desc: "Direct MP4 • Naratif",
+                              nicheTarget: "edukasi" as ContentNiche,
+                            },
+                          ].map((item, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => {
+                                setDirectUrl(item.url);
+                                setNiche(item.nicheTarget);
+                              }}
+                              className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                                directUrl === item.url
+                                  ? "bg-emerald-500/20 border-emerald-500 text-emerald-200"
+                                  : "bg-slate-950/80 border-slate-800/80 text-slate-300 hover:border-slate-700"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="font-semibold text-xs text-white">{item.title}</span>
+                                {directUrl === item.url && (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-mono">{item.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2.5 text-[11px] text-emerald-300 flex items-start gap-2">
+                        <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-semibold text-emerald-200">Keunggulan Link Direct:</span> Video diunduh dengan stream HTTP/HTTPS kecepatan tinggi tanpa memerlukan cookies, tidak terkena blokir bot YouTube, dan mendukung link Google Drive / Dropbox yang diubah otomatis menjadi direct download.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {sourceType === "upload" && (
                     <div className="mt-2">
                       <div
@@ -501,7 +612,7 @@ export default function App() {
                         <div>
                           <p className="font-semibold text-amber-200">Tips Tautan YouTube:</p>
                           <p className="text-amber-300/90 leading-relaxed">
-                            Jika YouTube memblokir unduhan server dengan pesan <em>"Sign in to confirm you're not a bot"</em>, gunakan tab <strong>"Unggah File Lokal"</strong> untuk memproses file MP4 secara langsung tanpa batasan bot YouTube.
+                            Jika YouTube memblokir unduhan server dengan pesan <em>"Sign in to confirm you're not a bot"</em>, gunakan tab <strong>"Tautan Direct Video"</strong> atau <strong>"Unggah File Lokal"</strong> untuk memproses file video tanpa batasan bot YouTube.
                           </p>
                         </div>
                       </div>

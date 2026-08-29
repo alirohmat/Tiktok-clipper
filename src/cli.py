@@ -242,9 +242,9 @@ def main_cli(
 
     # Step 1: Penyiapan File Sumber Video
     if url:
-        console.print("\n[bold cyan]⬇️ Mengunduh video dari tautan...[/bold cyan]")
+        console.print("\n[bold cyan]⬇️ Mengunduh video dari tautan (Direct Stream / Platform)...[/bold cyan]")
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-            task = progress.add_task("Sedang mengunduh dengan yt-dlp...", total=None)
+            task = progress.add_task("Sedang mengunduh file video...", total=None)
             downloaded_video, title_slug, err_dl = download_video_from_url(url, source_dir)
             progress.update(task, completed=True)
 

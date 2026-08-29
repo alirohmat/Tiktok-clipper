@@ -203,9 +203,9 @@ app.post("/api/generate", (req, res, next) => {
       }
       inputSource = req.file.path;
       sourceLabel = req.file.originalname;
-    } else if (sourceType === "url") {
+    } else if (sourceType === "url" || sourceType === "direct") {
       if (!url || !url.trim()) {
-        return res.status(400).json({ error: "Harap masukkan URL video yang valid." });
+        return res.status(400).json({ error: "Harap masukkan URL video atau link direct podcast yang valid." });
       }
       inputSource = url.trim();
       sourceLabel = url.trim();
