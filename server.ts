@@ -160,19 +160,30 @@ app.get("/api/jobs/:jobId", (req, res) => {
 });
 
 // API: Start Video Generation
-app.post("/api/generate", upload.single("videoFile"), (req, res) => {
-  try {
-    const {
-      sourceType = "sample",
-      url = "",
-      niche = "bisnis",
-      numClips = "3",
-      minDuration = "15",
-      maxDuration = "60",
-      vertical = "speaker",
-      subtitles = "true",
-      groqApiKey = "",
-    } = req.body;
+app.post("/api/generate", (req, res, next) => {
+  upload.single("videoFile")(req, res, (uploadErr) => {
+    if (uploadErr) {
+      if (uploadErr instanceof multer.MulterError) {
+        if (uploadErr.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ error: "Ukuran file video melebihi batas maksimal (2GB)." });
+        }
+        return res.status(400).json({ error: `Kesalahan unggah: ${uploadErr.message}` });
+      }
+      return res.status(400).json({ error: uploadErr.message || "Gagal mengunggah file video." });
+    }
+
+    try {
+      const {
+        sourceType = "sample",
+        url = "",
+        niche = "bisnis",
+        numClips = "3",
+        minDuration = "15",
+        maxDuration = "60",
+        vertical = "speaker",
+        subtitles = "true",
+        groqApiKey = "",
+      } = req.body || {};
 
     const parsedNumClips = Math.max(1, Math.min(10, parseInt(numClips, 10) || 3));
     const parsedMinDur = Math.max(5, Math.min(120, parseInt(minDuration, 10) || 15));
@@ -365,6 +376,7 @@ app.post("/api/generate", upload.single("videoFile"), (req, res) => {
     console.error("Generate API error:", err);
     return res.status(500).json({ error: err.message || "Gagal memulai pembuatan video." });
   }
+  });
 });
 
 // API: Stream & Serve Output Media (MP4, SRT, JSON, MD) with Byte-Range Support
@@ -418,6 +430,22 @@ app.get("/api/media/:jobId/:filename", (req, res) => {
     });
     fs.createReadStream(targetPath).pipe(res);
   }
+});
+
+// Fallback for unmatched API routes - guarantees JSON response, preventing Vite HTML fallback for APIs
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.path} tidak ditemukan.` });
+});
+
+// Global API error handler
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+  console.error("Global Express error:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "Terjadi kesalahan internal pada server.",
+  });
 });
 
 // Vite Middleware & Static Serving Setup

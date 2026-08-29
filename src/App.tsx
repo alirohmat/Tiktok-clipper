@@ -77,6 +77,52 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Safe helper to fetch and parse JSON without crashing on HTML error pages
+  const safeFetchJson = async <T = any>(
+    url: string,
+    options?: RequestInit
+  ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> => {
+    try {
+      const res = await fetch(url, options);
+      const contentType = res.headers.get("content-type") || "";
+
+      let data: any = null;
+      if (contentType.includes("application/json")) {
+        data = await res.json().catch(() => null);
+      } else {
+        const text = await res.text().catch(() => "");
+        try {
+          data = JSON.parse(text);
+        } catch {
+          // If response is not valid JSON (e.g., HTML error page from proxy)
+          if (!res.ok) {
+            return {
+              ok: false,
+              status: res.status,
+              error:
+                text.length > 0 && text.length < 150 && !text.includes("<")
+                  ? text
+                  : `Server mengembalikan status ${res.status} (${res.statusText || "Gagal berkomunikasi dengan server"}).`,
+            };
+          }
+        }
+      }
+
+      if (!res.ok) {
+        const errMsg = data?.error || data?.message || `HTTP ${res.status}: ${res.statusText || "Terjadi kesalahan"}`;
+        return { ok: false, status: res.status, data, error: errMsg };
+      }
+
+      return { ok: true, status: res.status, data };
+    } catch (e: any) {
+      return {
+        ok: false,
+        status: 0,
+        error: e?.message || "Gagal menghubungi server.",
+      };
+    }
+  };
+
   // Fetch System Status & Existing Jobs on mount
   useEffect(() => {
     fetchSystemStatus();
@@ -89,9 +135,9 @@ export default function App() {
 
     const checkJob = async () => {
       try {
-        const res = await fetch(`/api/jobs/${activeJobId}`);
-        if (!res.ok) return;
-        const data: JobData = await res.json();
+        const res = await safeFetchJson<JobData>(`/api/jobs/${activeJobId}`);
+        if (!res.ok || !res.data) return;
+        const data = res.data;
         setCurrentJob(data);
 
         if (data.status === "completed" || data.status === "error") {
@@ -114,10 +160,9 @@ export default function App() {
 
   const fetchSystemStatus = async () => {
     try {
-      const res = await fetch("/api/system-status");
-      if (res.ok) {
-        const data = await res.json();
-        setSystemStatus(data);
+      const res = await safeFetchJson<SystemStatus>("/api/system-status");
+      if (res.ok && res.data) {
+        setSystemStatus(res.data);
       }
     } catch (e) {
       console.warn("Could not fetch system status:", e);
@@ -126,13 +171,12 @@ export default function App() {
 
   const fetchJobsList = async () => {
     try {
-      const res = await fetch("/api/jobs");
-      if (res.ok) {
-        const data = await res.json();
-        setJobsHistory(data.jobs || []);
+      const res = await safeFetchJson<{ jobs: JobData[] }>("/api/jobs");
+      if (res.ok && res.data?.jobs) {
+        setJobsHistory(res.data.jobs);
         // If there's an existing completed job and no active job selected yet, show the latest one
-        if (!activeJobId && data.jobs && data.jobs.length > 0) {
-          const latest = data.jobs[0];
+        if (!activeJobId && res.data.jobs.length > 0) {
+          const latest = res.data.jobs[0];
           setActiveJobId(latest.id);
           setCurrentJob(latest);
         }
@@ -176,18 +220,16 @@ export default function App() {
         formData.append("url", urlVal.trim());
       }
 
-      const res = await fetch("/api/generate", {
+      const res = await safeFetchJson<{ success: boolean; jobId: string; error?: string }>("/api/generate", {
         method: "POST",
         body: formData,
       });
 
-      const data = await res.json();
-
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Gagal memulai pembuatan video.");
+      if (!res.ok || !res.data?.success) {
+        throw new Error(res.error || res.data?.error || "Gagal memulai pembuatan video.");
       }
 
-      setActiveJobId(data.jobId);
+      setActiveJobId(res.data.jobId);
       // Scroll smoothly to progress card
       setTimeout(() => {
         const el = document.getElementById("job-progress-card");
