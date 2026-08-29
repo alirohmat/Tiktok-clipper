@@ -2,13 +2,15 @@
 Modul Transkripsi & Media Probe
 Menggunakan FFprobe untuk inspeksi media, FFmpeg untuk ekstraksi audio 16kHz mono,
 serta Groq Whisper untuk transkripsi audio dengan stempel waktu per segmen.
+Mendukung automatic audio chunking untuk video berdurasi panjang / ukuran besar.
 """
 
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Callable
 from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
 from src.config import Settings
 from src.models import MediaProbeResult, TranscriptData, Segment
@@ -107,12 +109,12 @@ def probe_media(video_path: Path) -> Tuple[Optional[MediaProbeResult], Optional[
 
 def extract_audio(video_path: Path, output_audio_dir: Path) -> Tuple[Optional[Path], Optional[str]]:
     """
-    Mengekstrak audio dari video menjadi format 16kHz mono (m4a untuk hemat ukuran, fallback ke wav).
+    Mengekstrak audio dari video menjadi format 16kHz mono AAC 32k (hemat ukuran untuk voice recognition, fallback ke mp3/wav).
     """
     output_audio_dir.mkdir(parents=True, exist_ok=True)
     m4a_path = output_audio_dir / "audio.m4a"
 
-    # Command ekstraksi m4a (AAC mono 16kHz)
+    # Command ekstraksi m4a (AAC mono 16kHz 32kbps - optimal untuk Whisper)
     cmd_m4a = [
         Settings.FFMPEG_PATH,
         "-hide_banner",
@@ -120,21 +122,43 @@ def extract_audio(video_path: Path, output_audio_dir: Path) -> Tuple[Optional[Pa
         "-i", str(video_path),
         "-vn",
         "-acodec", "aac",
-        "-b:a", "64k",
+        "-b:a", "32k",
         "-ar", "16000",
         "-ac", "1",
         str(m4a_path)
     ]
 
     try:
-        logger.info("Mengekstrak audio ke format m4a (16kHz mono)...")
+        logger.info("Mengekstrak audio ke format m4a (16kHz mono 32k)...")
         subprocess.run(cmd_m4a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         if m4a_path.exists() and m4a_path.stat().st_size > 0:
             return m4a_path, None
     except Exception as e:
-        logger.warning(f"Ekstraksi m4a gagal, mencoba fallback ke wav: {e}")
+        logger.warning(f"Ekstraksi m4a gagal, mencoba fallback ke mp3: {e}")
 
-    # Fallback ke WAV jika m4a gagal
+    # Fallback ke MP3
+    mp3_path = output_audio_dir / "audio.mp3"
+    cmd_mp3 = [
+        Settings.FFMPEG_PATH,
+        "-hide_banner",
+        "-y",
+        "-i", str(video_path),
+        "-vn",
+        "-acodec", "libmp3lame",
+        "-b:a", "32k",
+        "-ar", "16000",
+        "-ac", "1",
+        str(mp3_path)
+    ]
+
+    try:
+        subprocess.run(cmd_mp3, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        if mp3_path.exists() and mp3_path.stat().st_size > 0:
+            return mp3_path, None
+    except Exception as e:
+        logger.warning(f"Ekstraksi mp3 gagal, mencoba fallback ke wav: {e}")
+
+    # Fallback ke WAV jika m4a & mp3 gagal
     wav_path = output_audio_dir / "audio.wav"
     cmd_wav = [
         Settings.FFMPEG_PATH,
@@ -158,17 +182,159 @@ def extract_audio(video_path: Path, output_audio_dir: Path) -> Tuple[Optional[Pa
         return None, f"Gagal mengekstrak audio dari video: {str(ex)}"
 
 
-def transcribe_audio(audio_path: Path, output_transcript_dir: Path) -> Tuple[Optional[TranscriptData], Optional[str]]:
+def get_audio_duration_seconds(audio_path: Path) -> float:
+    """Mendapatkan durasi file audio secara akurat dalam detik menggunakan ffprobe."""
+    cmd = [
+        Settings.FFPROBE_PATH,
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(audio_path)
+    ]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return float(res.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def split_audio_into_chunks(
+    audio_path: Path,
+    chunk_duration_sec: int = 600,
+    temp_dir: Optional[Path] = None
+) -> List[Tuple[Path, float, float]]:
+    """
+    Membagi file audio panjang menjadi beberapa potongan kecil (default 10 menit / 600 detik)
+    agar ukuran file tetap di bawah batas maksimal upload Groq Whisper (25MB).
+    Mengembalikan list tuple: (chunk_file_path, offset_start_seconds, chunk_duration_seconds).
+    """
+    if temp_dir is None:
+        temp_dir = audio_path.parent / "chunks"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    total_duration = get_audio_duration_seconds(audio_path)
+    if total_duration <= 0.0:
+        total_duration = 3600.0  # fallback estimasi
+
+    chunks: List[Tuple[Path, float, float]] = []
+    num_chunks = max(1, math.ceil(total_duration / chunk_duration_sec))
+
+    logger.info(f"Membagi audio ({total_duration:.1f}s) menjadi {num_chunks} bagian @ maks {chunk_duration_sec}s...")
+
+    for i in range(num_chunks):
+        start_sec = i * chunk_duration_sec
+        actual_chunk_dur = min(chunk_duration_sec, total_duration - start_sec)
+        if actual_chunk_dur <= 0.5 and i > 0:
+            break
+
+        chunk_filename = f"chunk_{i + 1:03d}.m4a"
+        chunk_path = temp_dir / chunk_filename
+
+        cmd = [
+            Settings.FFMPEG_PATH,
+            "-hide_banner",
+            "-y",
+            "-ss", str(start_sec),
+            "-t", str(actual_chunk_dur),
+            "-i", str(audio_path),
+            "-vn",
+            "-acodec", "aac",
+            "-b:a", "32k",
+            "-ar", "16000",
+            "-ac", "1",
+            str(chunk_path)
+        ]
+
+        try:
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            if chunk_path.exists() and chunk_path.stat().st_size > 0:
+                chunks.append((chunk_path, float(start_sec), float(actual_chunk_dur)))
+        except Exception as e:
+            logger.error(f"Gagal membuat audio chunk {i + 1}: {e}")
+
+    return chunks
+
+
+def _transcribe_single_audio_file(
+    client: Groq,
+    file_path: Path,
+    model: str,
+    max_retries: int = 3
+) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Mengirim satu file audio ke Groq Whisper API dengan penanganan rate limit & retry otomatis.
+    """
+    backoff_delays = [2, 5, 10]
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Mengirim {file_path.name} ({file_path.stat().st_size / (1024*1024):.2f} MB) ke Groq Whisper...")
+            with open(file_path, "rb") as file_obj:
+                transcription = client.audio.transcriptions.create(
+                    file=(file_path.name, file_obj.read()),
+                    model=model,
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"]
+                )
+
+            # Normalisasi output menjadi dictionary
+            raw_segments = getattr(transcription, "segments", []) or []
+            full_text = getattr(transcription, "text", "") or ""
+            language = getattr(transcription, "language", "id") or "id"
+            duration = float(getattr(transcription, "duration", 0.0) or 0.0)
+
+            return {
+                "text": full_text.strip(),
+                "segments": raw_segments,
+                "language": language,
+                "duration": duration
+            }, None
+
+        except RateLimitError as rle:
+            delay = backoff_delays[attempt] if attempt < len(backoff_delays) else 10
+            logger.warning(f"Groq Rate Limit tercapai. Menunggu {delay} detik (Percobaan {attempt + 1}/{max_retries})...")
+            if attempt == max_retries - 1:
+                return None, "Terkena batasan laju Groq API (Rate Limit 429). Tunggu 1 menit lalu coba lagi."
+            time.sleep(delay)
+
+        except (APIConnectionError, APIStatusError) as api_err:
+            err_str = str(api_err)
+            if "413" in err_str or "request_too_large" in err_str.lower() or "too large" in err_str.lower():
+                logger.warning(f"File {file_path.name} terlalu besar untuk Groq Whisper (HTTP 413).")
+                return None, "REQUEST_TOO_LARGE"
+
+            logger.error(f"Groq API Error: {api_err}")
+            if attempt == max_retries - 1:
+                return None, f"Gagal menghubungi Groq Whisper API: {err_str[:200]}"
+            time.sleep(2)
+
+        except Exception as ex:
+            logger.exception("Error saat transkripsi chunk")
+            if attempt == max_retries - 1:
+                return None, f"Kesalahan saat transkripsi: {str(ex)}"
+            time.sleep(2)
+
+    return None, "Gagal melakukan transkripsi setelah beberapa percobaan."
+
+
+def transcribe_audio(
+    audio_path: Path,
+    output_transcript_dir: Path,
+    progress_callback: Optional[Callable[[str, int], None]] = None
+) -> Tuple[Optional[TranscriptData], Optional[str]]:
     """
     Mentranskripsi file audio menggunakan model Groq Whisper dengan stempel waktu per segmen.
+    Secara otomatis membagi audio menjadi chunk 10 menit jika ukuran file melebihi batas Groq (25MB)
+    atau jika durasi audio panjang.
     Hasil transkripsi di-cache dan disimpan ke format transcript.json & transcript.srt.
     """
     if not Settings.GROQ_API_KEY:
         logger.warning("GROQ_API_KEY belum diisi. Menggunakan mode deteksi segmen otomatis berbasis media...")
-        # Buat segmen simulasi berdasarkan durasi file audio
         try:
-            probe_res, _ = probe_media(audio_path)
-            total_dur = probe_res.duration if probe_res else 45.0
+            total_dur = get_audio_duration_seconds(audio_path)
+            if total_dur <= 0.0:
+                probe_res, _ = probe_media(audio_path)
+                total_dur = probe_res.duration if probe_res else 45.0
         except Exception:
             total_dur = 45.0
 
@@ -215,42 +381,41 @@ def transcribe_audio(audio_path: Path, output_transcript_dir: Path) -> Tuple[Opt
     if cached_transcript:
         logger.info("Memuat transkrip dari cache...")
         transcript_data = TranscriptData(**cached_transcript)
-        # Tulis ulang file transcript di folder output saat ini
         _save_transcript_files(transcript_data, output_transcript_dir)
         return transcript_data, None
 
     output_transcript_dir.mkdir(parents=True, exist_ok=True)
     client = Groq(api_key=Settings.GROQ_API_KEY, base_url=Settings.GROQ_BASE_URL)
 
-    # Groq Free-Tier Rate Limit Handling & Backoff
-    max_retries = 3
-    backoff_delays = [2, 4, 8]
+    file_size = audio_path.stat().st_size if audio_path.exists() else 0
+    file_size_mb = file_size / (1024 * 1024)
+    total_audio_duration = get_audio_duration_seconds(audio_path)
 
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Mengirim audio ke Groq Whisper ({Settings.GROQ_WHISPER_MODEL})...")
-            with open(audio_path, "rb") as file_obj:
-                transcription = client.audio.transcriptions.create(
-                    file=(audio_path.name, file_obj.read()),
-                    model=Settings.GROQ_WHISPER_MODEL,
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"]
-                )
+    # Batas aman Groq Whisper: 20 MB atau durasi > 600 detik (10 menit)
+    MAX_DIRECT_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+    MAX_DIRECT_DURATION_SEC = 600.0            # 10 menit
 
-            # Ekstrak data segmen
-            raw_segments = getattr(transcription, "segments", []) or []
-            full_text = getattr(transcription, "text", "").strip()
+    use_chunking = file_size > MAX_DIRECT_SIZE_BYTES or total_audio_duration > MAX_DIRECT_DURATION_SEC
 
-            if not full_text and not raw_segments:
-                return None, (
-                    "Transkrip kosong. Groq Whisper tidak mendeteksi suara percakapan dalam video ini. "
-                    "Pastikan audio memiliki suara ucapan yang jelas."
-                )
+    # Percobaan 1: Jika file kecil, coba transkripsi langsung secara utuh
+    if not use_chunking:
+        if progress_callback:
+            progress_callback(f"Mengirim audio ke Groq Whisper ({file_size_mb:.1f}MB)...", 45)
 
-            # Buat list segmen berurutan dengan ID global 1..N
+        res_dict, err = _transcribe_single_audio_file(
+            client=client,
+            file_path=audio_path,
+            model=Settings.GROQ_WHISPER_MODEL
+        )
+
+        if err != "REQUEST_TOO_LARGE" and res_dict is not None:
+            # Berhasil transkripsi langsung
+            raw_segments = res_dict.get("segments", [])
+            full_text = res_dict.get("text", "")
+            
             parsed_segments: List[Segment] = []
             for idx, s in enumerate(raw_segments, start=1):
-                seg_dict = s if isinstance(s, dict) else s.__dict__
+                seg_dict = s if isinstance(s, dict) else getattr(s, "__dict__", {})
                 seg_text = seg_dict.get("text", "").strip()
                 if not seg_text:
                     continue
@@ -268,56 +433,123 @@ def transcribe_audio(audio_path: Path, output_transcript_dir: Path) -> Tuple[Opt
                     )
                 )
 
-            if not parsed_segments:
-                # Jika Whisper verbose_json tidak menghasilkan segmen, buat minimal 1 segmen darurat
+            if not parsed_segments and full_text:
                 parsed_segments.append(
                     Segment(
                         id=1,
                         start=0.0,
-                        end=float(getattr(transcription, "duration", 15.0) or 15.0),
+                        end=total_audio_duration or 15.0,
                         text=full_text
                     )
                 )
 
-            transcript_data = TranscriptData(
-                text=full_text,
-                segments=parsed_segments,
-                language=getattr(transcription, "language", "id") or "id",
-                duration=float(getattr(transcription, "duration", 0.0) or 0.0)
-            )
-
-            # Simpan cache
-            save_cache("transcript", audio_hash, transcript_data.model_dump())
-            
-            # Simpan file JSON & SRT
-            _save_transcript_files(transcript_data, output_transcript_dir)
-
-            # Istirahat 2 detik agar aman kuota gratis Groq
-            time.sleep(2)
-            return transcript_data, None
-
-        except RateLimitError as rle:
-            delay = backoff_delays[attempt] if attempt < len(backoff_delays) else 10
-            logger.warning(f"Groq Rate Limit tercapai. Menunggu {delay} detik (Percobaan {attempt + 1}/{max_retries})...")
-            if attempt == max_retries - 1:
-                return None, (
-                    f"Terkena batasan laju Groq API (Rate Limit 429). "
-                    f"Solusi: Tunggu 1 menit sebelum mencoba kembali, atau ganti API key."
+            if parsed_segments:
+                transcript_data = TranscriptData(
+                    text=full_text,
+                    segments=parsed_segments,
+                    language=res_dict.get("language", "id") or "id",
+                    duration=res_dict.get("duration") or total_audio_duration or 0.0
                 )
-            time.sleep(delay)
+                save_cache("transcript", audio_hash, transcript_data.model_dump())
+                _save_transcript_files(transcript_data, output_transcript_dir)
+                return transcript_data, None
 
-        except (APIConnectionError, APIStatusError) as api_err:
-            logger.error(f"Groq API Error: {api_err}")
-            return None, (
-                f"Gagal menghubungi Groq Whisper API: {str(api_err)[:200]}\n"
-                f"Solusi: Periksa koneksi internet Anda dan pastikan GROQ_API_KEY valid."
+        if err and err != "REQUEST_TOO_LARGE":
+            return None, err
+
+    # Chunking Mode: Untuk audio panjang (>10 menit atau >20MB atau respon HTTP 413)
+    logger.info(
+        f"Memproses audio dengan Chunking Pipeline (Durasi: {total_audio_duration:.1f}s, Ukuran: {file_size_mb:.1f}MB)..."
+    )
+    
+    # Bagi audio menjadi potongan 10 menit (600 detik)
+    chunks = split_audio_into_chunks(audio_path, chunk_duration_sec=600)
+    if not chunks:
+        return None, "Gagal memotong file audio panjang menjadi sub-bagian."
+
+    total_chunks = len(chunks)
+    all_segments: List[Segment] = []
+    all_texts: List[str] = []
+    detected_language = "id"
+    global_segment_id = 1
+
+    for idx, (chunk_path, offset_start, chunk_dur) in enumerate(chunks):
+        chunk_num = idx + 1
+        msg = f"Transkripsi audio bagian {chunk_num}/{total_chunks} ({offset_start/60:.0f}m - {(offset_start+chunk_dur)/60:.0f}m)..."
+        logger.info(msg)
+        if progress_callback:
+            percent = 40 + int((chunk_num / total_chunks) * 20)
+            progress_callback(msg, percent)
+
+        chunk_res, chunk_err = _transcribe_single_audio_file(
+            client=client,
+            file_path=chunk_path,
+            model=Settings.GROQ_WHISPER_MODEL
+        )
+
+        if chunk_err or not chunk_res:
+            logger.error(f"Gagal mentranskripsi chunk {chunk_num}: {chunk_err}")
+            return None, f"Gagal mentranskripsi bagian ke-{chunk_num} dari video ({chunk_err})"
+
+        chunk_raw_segs = chunk_res.get("segments", [])
+        chunk_text = chunk_res.get("text", "").strip()
+        if chunk_text:
+            all_texts.append(chunk_text)
+
+        if idx == 0 and chunk_res.get("language"):
+            detected_language = chunk_res.get("language")
+
+        # Offset timestamp segmen berdasarkan posisi start chunk
+        for s in chunk_raw_segs:
+            seg_dict = s if isinstance(s, dict) else getattr(s, "__dict__", {})
+            seg_text = seg_dict.get("text", "").strip()
+            if not seg_text:
+                continue
+
+            rel_start = float(seg_dict.get("start", 0.0))
+            rel_end = float(seg_dict.get("end", 0.0))
+
+            abs_start = round(offset_start + rel_start, 2)
+            abs_end = round(offset_start + rel_end, 2)
+
+            all_segments.append(
+                Segment(
+                    id=global_segment_id,
+                    start=abs_start,
+                    end=abs_end,
+                    text=seg_text,
+                    seek=float(seg_dict.get("seek", 0.0)),
+                    temperature=float(seg_dict.get("temperature", 0.0)),
+                    avg_logprob=float(seg_dict.get("avg_logprob", 0.0)),
+                    compression_ratio=float(seg_dict.get("compression_ratio", 0.0)),
+                    no_speech_prob=float(seg_dict.get("no_speech_prob", 0.0))
+                )
             )
+            global_segment_id += 1
 
-        except Exception as ex:
-            logger.exception("Error tak terduga pada Groq Whisper")
-            return None, f"Kesalahan saat transkripsi audio: {str(ex)}"
+        # Jeda 1.5 detik antar chunk agar kuota rate limit Groq tetap aman
+        time.sleep(1.5)
 
-    return None, "Gagal melakukan transkripsi setelah beberapa kali percobaan."
+    if not all_segments:
+        return None, "Transkripsi selesai namun tidak ditemukan suara percakapan dalam audio."
+
+    combined_text = " ".join(all_texts)
+    last_end = all_segments[-1].end if all_segments else total_audio_duration
+    total_dur_calc = max(total_audio_duration, last_end)
+
+    transcript_data = TranscriptData(
+        text=combined_text,
+        segments=all_segments,
+        language=detected_language,
+        duration=round(total_dur_calc, 2)
+    )
+
+    # Simpan ke cache & file output
+    save_cache("transcript", audio_hash, transcript_data.model_dump())
+    _save_transcript_files(transcript_data, output_transcript_dir)
+
+    logger.info(f"Transkripsi audio panjang berhasil: {len(all_segments)} segmen dari {total_chunks} bagian.")
+    return transcript_data, None
 
 
 def _save_transcript_files(transcript_data: TranscriptData, output_dir: Path) -> None:

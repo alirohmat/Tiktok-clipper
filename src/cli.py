@@ -298,7 +298,11 @@ def main_cli(
     console.print("\n[bold cyan]🧠 Mentranskripsi percakapan dengan Groq Whisper...[/bold cyan]")
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
         task = progress.add_task(f"Mengirim ke {Settings.GROQ_WHISPER_MODEL}...", total=None)
-        transcript_data, err_transcribe = transcribe_audio(extracted_audio, transcript_dir)
+        
+        def cli_transcribe_cb(msg: str, _percent: int):
+            progress.update(task, description=msg)
+
+        transcript_data, err_transcribe = transcribe_audio(extracted_audio, transcript_dir, progress_callback=cli_transcribe_cb)
         progress.update(task, completed=True)
 
     if err_transcribe or not transcript_data:

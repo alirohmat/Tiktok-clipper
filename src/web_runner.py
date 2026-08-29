@@ -101,9 +101,13 @@ def run_pipeline(
         return 1
 
     # Step 4: Transkripsi Whisper
-    emit_event("progress", {"percent": 50, "stage": "Transkripsi AI", "message": "Menjalankan transkripsi Whisper dengan timestamp presisi..."})
+    emit_event("progress", {"percent": 45, "stage": "Transkripsi AI", "message": "Menjalankan transkripsi Whisper dengan timestamp presisi..."})
     transcript_dir = output_dir / "transcript"
-    transcript_data, trans_err = transcribe_audio(audio_path, transcript_dir)
+    
+    def on_transcribe_progress(msg: str, percent: int):
+        emit_event("progress", {"percent": percent, "stage": "Transkripsi AI", "message": msg})
+
+    transcript_data, trans_err = transcribe_audio(audio_path, transcript_dir, progress_callback=on_transcribe_progress)
     if trans_err or not transcript_data:
         emit_event("error", {"message": f"Transkripsi gagal: {trans_err}"})
         return 1
