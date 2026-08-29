@@ -41,6 +41,10 @@ def _is_direct_video_url(url: str) -> bool:
     # Dropbox direct link
     if "dropbox.com" in url and ("dl=1" in url or "raw=1" in url):
         return True
+
+    # Layanan direct download / API download CDN (misal savenow, cdn, download/...)
+    if any(k in url.lower() for k in ["/download/", "/stream/", "/video/", "savenow.to", "googlevideo.com"]):
+        return True
         
     return False
 
@@ -66,8 +70,20 @@ def _normalize_direct_url(url: str) -> str:
     return url
 
 
+def _extract_filename_from_cd(cd_header: Optional[str]) -> Optional[str]:
+    """Mengekstrak nama file dari header Content-Disposition HTTP."""
+    if not cd_header:
+        return None
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)["\']?', cd_header, re.IGNORECASE)
+    if match:
+        name = match.group(1).strip()
+        # Bersihkan ekstensi jika ada
+        return Path(name).stem
+    return None
+
+
 def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
-    """Mengunduh berkas video langsung melalui HTTP/HTTPS streaming."""
+    """Mengunduh berkas video langsung melalui HTTP/HTTPS streaming, mendukung chunked encoding & dynamic URLs."""
     normalized_url = _normalize_direct_url(url)
     logger.info(f"Mengunduh direct video stream dari: {normalized_url[:80]}...")
     
@@ -80,7 +96,9 @@ def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Pa
     req = urllib.request.Request(normalized_url, headers=headers)
     
     try:
-        with urllib.request.urlopen(req, timeout=45) as response, open(output_path, 'wb') as out_file:
+        with urllib.request.urlopen(req, timeout=90) as response, open(output_path, 'wb') as out_file:
+            content_type = response.headers.get('content-type', '').lower()
+            content_disposition = response.headers.get('content-disposition', '')
             content_length = response.headers.get('content-length')
             total_bytes = int(content_length) if content_length and content_length.isdigit() else 0
             downloaded = 0
@@ -95,10 +113,18 @@ def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Pa
                 if total_bytes > 0 and downloaded % (5 * 1024 * 1024) < block_size:
                     pct = (downloaded / total_bytes) * 100
                     logger.info(f"Direct download progress: {pct:.1f}% ({downloaded / (1024*1024):.1f}/{total_bytes / (1024*1024):.1f} MB)")
+                elif total_bytes == 0 and downloaded % (5 * 1024 * 1024) < block_size:
+                    logger.info(f"Direct download stream: {downloaded / (1024*1024):.1f} MB terunduh (chunked)...")
 
         if output_path.exists() and output_path.stat().st_size > 1024:
-            file_title = Path(urllib.parse.urlparse(url).path).stem or "direct_podcast_video"
-            return output_path, sanitize_filename(file_title, max_length=40), None
+            # Ambil judul dari Content-Disposition jika ada (misal nama video podcast)
+            cd_title = _extract_filename_from_cd(content_disposition)
+            if cd_title:
+                file_title = cd_title
+            else:
+                raw_path_stem = Path(urllib.parse.urlparse(url).path).stem
+                file_title = raw_path_stem if raw_path_stem and len(raw_path_stem) > 3 else "direct_podcast_video"
+            return output_path, sanitize_filename(file_title, max_length=50), None
         else:
             return None, None, "File video langsung yang diunduh kosong atau tidak valid."
             
