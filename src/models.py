@@ -28,6 +28,15 @@ class TranscriptData(BaseModel):
     duration: Optional[float] = Field(default=0.0, description="Total durasi transkrip dalam detik")
 
 
+class PodcastContext(BaseModel):
+    """Konteks pembicara dan figur publik yang terdeteksi otomatis dari intro/percakapan."""
+    host: Optional[str] = Field(default="Host", description="Nama host/pewawancara podcast")
+    guest: Optional[str] = Field(default="Bintang Tamu", description="Nama bintang tamu / narasumber")
+    guest_role: Optional[str] = Field(default="", description="Profesi atau latar belakang bintang tamu")
+    main_topic: Optional[str] = Field(default="", description="Topik utama perbincangan")
+    key_entities: List[str] = Field(default_factory=list, description="Figur publik / nama tokoh / istilah penting yang disebut")
+
+
 class ClipCandidate(BaseModel):
     """Format kandidat klip yang dihasilkan oleh Groq LLM."""
     start_segment_id: int = Field(..., description="ID segmen awal yang dipilih LLM")

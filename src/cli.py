@@ -315,16 +315,21 @@ def main_cli(
     )
 
     # Step 5: Analisis AI & Seleksi Klip TikTok 2026
-    console.print("\n[bold cyan]🤖 Menganalisis momen terbaik dengan Groq LLM (Strategi 2026)...[/bold cyan]")
+    console.print("\n[bold cyan]🤖 Menganalisis momen terbaik dengan Groq LLM (Auto-Context Speaker Detection & Algoritma 2026)...[/bold cyan]")
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-        task = progress.add_task(f"Menganalisis hook & nilai viral ({Settings.GROQ_LLM_MODEL})...", total=None)
+        task = progress.add_task(f"Mendeteksi figur publik & hook viral ({Settings.GROQ_LLM_MODEL})...", total=None)
+        
+        def on_cli_analyze_progress(msg: str, percent: int):
+            progress.update(task, description=f"[bold green]{msg}[/bold green]")
+
         validated_clips, err_analyze = analyze_transcript(
             transcript=transcript_data,
             niche=niche,
             min_duration=min_duration,
             max_duration=max_duration,
             num_clips=num_clips,
-            output_analysis_dir=analysis_dir
+            output_analysis_dir=analysis_dir,
+            progress_callback=on_cli_analyze_progress
         )
         progress.update(task, completed=True)
 

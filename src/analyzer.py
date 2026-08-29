@@ -8,22 +8,85 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
 from src.config import Settings
 from src.models import (
     ClipAnalysisResult,
     ClipCandidate,
+    PodcastContext,
     Segment,
     TranscriptData,
     ValidatedClip,
 )
 from src.prompts import (
+    PODCAST_CONTEXT_SYSTEM_PROMPT,
     TIKTOK_SYSTEM_PROMPT,
     build_analysis_user_prompt,
+    build_context_detection_prompt,
     build_json_repair_prompt,
 )
 from src.utils import calculate_file_hash, get_cache, logger, sanitize_filename, save_cache
+
+
+def detect_podcast_context(
+    client: Groq,
+    transcript: TranscriptData
+) -> Optional[PodcastContext]:
+    """
+    Auto-Context Speaker Detection (Tanpa Vision):
+    Membaca intro dan salam pembuka podcast (2-3 menit pertama) untuk mengidentifikasi
+    nama Host, nama Bintang Tamu, latar belakang/profesi, dan tokoh-tokoh penting yang disebut.
+    """
+    if not transcript.segments:
+        return None
+
+    # Ambil 80 segmen awal (sekitar 2-3 menit pertama yang memuat salam/intro)
+    intro_segments = transcript.segments[:min(80, len(transcript.segments))]
+    intro_text = " ".join(s.text.strip() for s in intro_segments)
+    
+    if len(intro_text.strip()) < 30:
+        return None
+
+    import hashlib
+    ctx_hash = hashlib.sha256(intro_text[:1000].encode("utf-8")).hexdigest()
+    cached_ctx = get_cache("podcast_context", ctx_hash)
+    if cached_ctx:
+        logger.info("Memuat konteks pembicara & podcast dari cache...")
+        return PodcastContext(**cached_ctx)
+
+    user_prompt = build_context_detection_prompt(intro_text)
+    
+    logger.info("Menjalankan Auto-Context Speaker Detection pada bagian pembuka video...")
+    resp_text, err = _call_groq_llm(
+        client=client,
+        system_prompt=PODCAST_CONTEXT_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model=Settings.GROQ_LLM_MODEL
+    )
+
+    if err or not resp_text:
+        logger.warning(f"Gagal mendeteksi konteks podcast: {err}")
+        return None
+
+    clean_text = resp_text.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    if clean_text.startswith("```"):
+        clean_text = clean_text[3:]
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+    clean_text = clean_text.strip()
+
+    try:
+        data = json.loads(clean_text)
+        ctx = PodcastContext(**data)
+        save_cache("podcast_context", ctx_hash, ctx.model_dump())
+        logger.info(f"Konteks Terdeteksi: Host='{ctx.host}' | Tamu='{ctx.guest}' ({ctx.guest_role}) | Topik='{ctx.main_topic}'")
+        return ctx
+    except Exception as ex:
+        logger.warning(f"Gagal mem-parsing konteks podcast ({ex}): {clean_text[:150]}")
+        return None
 
 
 def chunk_segments(
@@ -68,11 +131,23 @@ def chunk_segments(
     return chunks
 
 
-def format_segments_for_llm(segments: List[Segment]) -> str:
-    """Format daftar segmen menjadi teks ramah baca untuk LLM dengan ID jelas."""
+def format_segments_for_llm(
+    segments: List[Segment],
+    podcast_context: Optional[PodcastContext] = None
+) -> str:
+    """
+    Format daftar segmen menjadi teks ramah baca untuk LLM dengan ID jelas dan anotasi konteks pembicara.
+    CATATAN: Format ini hanya untuk prompt LLM, data segmen asli tetap utuh untuk rendering subtitle.
+    """
     lines = []
+    host_tag = f"[{podcast_context.host} - Host]" if (podcast_context and podcast_context.host and podcast_context.host != "Host") else "[Host]"
+    guest_tag = f"[{podcast_context.guest} - Tamu]" if (podcast_context and podcast_context.guest and podcast_context.guest != "Bintang Tamu") else "[Bintang Tamu]"
+
     for s in segments:
-        lines.append(f"[ID:{s.id}] ({s.start:.1f}s - {s.end:.1f}s): {s.text}")
+        text_clean = s.text.strip()
+        is_question = text_clean.endswith("?") or any(text_clean.lower().startswith(q) for q in ["kenapa", "gimana", "apa", "kapan", "siapa", "mengapa", "serius", "lu pernah", "menurut lu"])
+        speaker_hint = host_tag if (is_question and len(text_clean.split()) < 16) else guest_tag
+        lines.append(f"[ID:{s.id}] ({s.start:.1f}s - {s.end:.1f}s) {speaker_hint}: {text_clean}")
     return "\n".join(lines)
 
 
@@ -126,16 +201,18 @@ def analyze_chunk_with_groq(
     niche: str,
     min_dur: int,
     max_dur: int,
-    clips_per_chunk: int
+    clips_per_chunk: int,
+    podcast_context: Optional[PodcastContext] = None
 ) -> Tuple[List[ClipCandidate], Optional[str]]:
     """Menganalisis satu chunk segmen dengan Groq LLM dan memvalidasi JSON."""
-    formatted_text = format_segments_for_llm(chunk)
+    formatted_text = format_segments_for_llm(chunk, podcast_context)
     user_prompt = build_analysis_user_prompt(
         segments_formatted_text=formatted_text,
         niche=niche,
         min_duration=min_dur,
         max_duration=max_dur,
-        target_clips_count=clips_per_chunk
+        target_clips_count=clips_per_chunk,
+        podcast_context=podcast_context.model_dump() if podcast_context else None
     )
 
     response_text, error = _call_groq_llm(
@@ -312,18 +389,27 @@ def analyze_transcript(
     min_duration: int = 15,
     max_duration: int = 60,
     num_clips: int = 3,
-    output_analysis_dir: Optional[Path] = None
+    output_analysis_dir: Optional[Path] = None,
+    progress_callback: Optional[Callable[[str, int], None]] = None
 ) -> Tuple[List[ValidatedClip], Optional[str]]:
     """
     Fungsi utama pipeline analisis:
-    Membagi transkrip menjadi chunk, memanggil Groq LLM, memvalidasi hasil, dan menyimpan analysis.json.
-    Mendukung deteksi niche otomatis dari ringkasan konten oleh LLM.
+    1. Menjalankan Auto-Context Speaker Detection (Deteksi Host, Tamu & Entity).
+    2. Membagi transkrip menjadi chunk teratur.
+    3. Memanggil Groq LLM dengan Strategi Algoritma TikTok 2026.
+    4. Memvalidasi hasil seleksi, menghitung stempel waktu asli, dan menyimpan analysis.json.
     """
     if not transcript.segments:
         return [], "Transkrip tidak memiliki segmen audio untuk dianalisis."
 
+    if progress_callback:
+        progress_callback("Memeriksa konfigurasi AI & mendeteksi figur publik...", 50)
+
     if not Settings.GROQ_API_KEY:
         logger.warning("GROQ_API_KEY tidak diisi, menggunakan analisis berbasis segmen audio aktual...")
+        if progress_callback:
+            progress_callback("Mode offline: Menyeleksi segmen audio paling padat...", 55)
+
         total_duration = transcript.duration or (transcript.segments[-1].end if transcript.segments else 60.0)
         target_clip_len = max(min_duration, min(max_duration, 35.0))
         
@@ -346,7 +432,6 @@ def analyze_transcript(
             first_text = matching_segs[0].text.strip() if matching_segs else "Momen Penting Video"
             joined_text = " ".join([s.text.strip() for s in matching_segs[:4]])
             
-            # Judul dan hook diambil dari isi percakapan asli
             words = first_text.split()
             title_text = " ".join(words[:6]) if len(words) >= 4 else (first_text[:50] or f"Highlight Bagian {i+1}")
             hook_text = first_text[:110] if len(first_text) > 10 else f"Simak fakta menarik pada bagian ke-{i+1} ini!"
@@ -376,17 +461,27 @@ def analyze_transcript(
         )
         return validated, None
 
-    if not transcript.segments:
-        return [], "Transkrip tidak memiliki segmen untuk dianalisis."
+    client = Settings.get_groq_client()
 
-    # Periksa cache analisis berdasarkan hash isi teks transkrip + parameter
-    cache_str = f"{transcript.text[:1000]}_{len(transcript.segments)}_{niche}_{min_duration}_{max_duration}_{num_clips}"
+    # Step 1: Auto-Context Speaker Detection (Host, Tamu & Entity)
+    if progress_callback:
+        progress_callback("🎯 Menjalankan Auto-Context Speaker Detection (Mendeteksi Host & Tamu)...", 52)
+    
+    podcast_context = detect_podcast_context(client, transcript)
+    if podcast_context and progress_callback:
+        guest_str = f"{podcast_context.guest} ({podcast_context.guest_role})" if podcast_context.guest_role else podcast_context.guest
+        progress_callback(f"👤 Terdeteksi: Host: '{podcast_context.host}' | Tamu: '{guest_str}'", 54)
+
+    # Periksa cache analisis
+    cache_str = f"{transcript.text[:1000]}_{len(transcript.segments)}_{niche}_{min_duration}_{max_duration}_{num_clips}_{podcast_context.guest if podcast_context else ''}"
     import hashlib
     analysis_hash = hashlib.sha256(cache_str.encode("utf-8")).hexdigest()
     
     cached_analysis = get_cache("analysis", analysis_hash)
     if cached_analysis:
         logger.info("Memuat hasil analisis klip dari cache...")
+        if progress_callback:
+            progress_callback("Memuat hasil analisis klip terverifikasi dari cache...", 65)
         candidates = [ClipCandidate(**c) for c in cached_analysis.get("candidates", [])]
         validated = validate_and_filter_clips(
             raw_candidates=candidates,
@@ -397,21 +492,26 @@ def analyze_transcript(
         )
         return validated, None
 
+    # Step 2: Chunking dan Analisis dengan Algoritma TikTok 2026
     chunks = chunk_segments(transcript.segments)
-    client = Settings.get_groq_client()
-
     all_candidates: List[ClipCandidate] = []
     clips_per_chunk = max(2, (num_clips // len(chunks)) + 2)
 
     for i, chunk in enumerate(chunks, start=1):
-        logger.info(f"Menganalisis chunk transkrip {i}/{len(chunks)}...")
+        percent_now = 55 + int((i / len(chunks)) * 14)
+        msg = f"🧠 Menganalisis babak {i}/{len(chunks)} (Hook 0-3s, Retensi, & Potensi Loop)..."
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg, percent_now)
+
         candidates, err = analyze_chunk_with_groq(
             client=client,
             chunk=chunk,
             niche=niche,
             min_dur=min_duration,
             max_dur=max_duration,
-            clips_per_chunk=clips_per_chunk
+            clips_per_chunk=clips_per_chunk,
+            podcast_context=podcast_context
         )
         if err:
             logger.warning(f"Peringatan saat analisis chunk {i}: {err}")
@@ -424,7 +524,10 @@ def analyze_transcript(
             "Coba ubah rentang durasi atau niche konten."
         )
 
-    # Validasi dan seleksi klip terbaik
+    # Step 3: Validasi Anti-Overlap & Skor Tertinggi
+    if progress_callback:
+        progress_callback(f"🔥 Menyeleksi Top-{num_clips} Klip Viral Berdasarkan Skor Algoritma 2026...", 70)
+
     validated_clips = validate_and_filter_clips(
         raw_candidates=all_candidates,
         all_segments=transcript.segments,
@@ -437,7 +540,8 @@ def analyze_transcript(
     save_cache("analysis", analysis_hash, {
         "candidates": [c.model_dump() for c in all_candidates],
         "niche": niche,
-        "num_clips": num_clips
+        "num_clips": num_clips,
+        "context": podcast_context.model_dump() if podcast_context else None
     })
 
     # Simpan analysis.json ke output dir jika diberikan
@@ -447,6 +551,7 @@ def analyze_transcript(
         with open(analysis_file, "w", encoding="utf-8") as f:
             json.dump({
                 "niche": niche,
+                "podcast_context": podcast_context.model_dump() if podcast_context else None,
                 "target_clips_count": num_clips,
                 "total_candidates": len(all_candidates),
                 "selected_clips": [c.model_dump(exclude={"segments"}) for c in validated_clips]

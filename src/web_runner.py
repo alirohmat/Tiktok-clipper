@@ -125,16 +125,21 @@ def run_pipeline(
         "language": transcript_data.language
     })
 
-    # Step 5: Analisis AI & Seleksi Klip TikTok 2026
-    emit_event("progress", {"percent": 65, "stage": "Analisis Konten 2026", "message": f"Menganalisis hook, retensi & strategi niche {niche}..."})
+    # Step 5: Analisis AI & Seleksi Klip TikTok 2026 (Auto-Context Speaker Detection)
+    emit_event("progress", {"percent": 50, "stage": "Analisis Konten 2026", "message": f"Menganalisis hook, retensi & strategi niche {niche}..."})
     analysis_dir = output_dir / "analysis"
+
+    def on_analysis_progress(msg: str, percent: int):
+        emit_event("progress", {"percent": percent, "stage": "Analisis AI & Konteks Tokoh", "message": msg})
+
     validated_clips, analysis_err = analyze_transcript(
         transcript=transcript_data,
         niche=niche,
         min_duration=min_duration,
         max_duration=max_duration,
         num_clips=num_clips,
-        output_analysis_dir=analysis_dir
+        output_analysis_dir=analysis_dir,
+        progress_callback=on_analysis_progress
     )
     if analysis_err or not validated_clips:
         emit_event("error", {"message": f"Analisis klip gagal: {analysis_err}"})
