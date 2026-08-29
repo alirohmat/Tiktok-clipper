@@ -39,6 +39,7 @@ import {
   Link as LinkIcon,
   Radio,
   FileVideo,
+  Key,
 } from "lucide-react";
 import {
   PortraitCropMode,
