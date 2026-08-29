@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 from src.config import Settings
 from src.models import MediaProbeResult, ValidatedClip
 from src.utils import generate_srt_content, logger
+from src.speaker_tracker import generate_speaker_crop_filter, OPENCV_AVAILABLE
 
 
 def _escape_ffmpeg_path(path_str: str) -> str:
@@ -22,23 +23,79 @@ def _escape_ffmpeg_path(path_str: str) -> str:
     return s
 
 
-def build_vertical_filter(vertical_mode: str, probe: Optional[MediaProbeResult]) -> Optional[str]:
+def build_vertical_filter(
+    vertical_mode: str,
+    probe: Optional[MediaProbeResult],
+    source_video: Optional[Path] = None,
+    start_time: float = 0.0,
+    duration: float = 30.0
+) -> Optional[str]:
     """
     Menghasilkan string filter FFmpeg untuk format vertikal TikTok 9:16 (1080x1920).
+    Mendukung deteksi pembicara aktif (speaker tracking) dan podcast split.
     """
-    mode = vertical_mode.lower()
+    mode = vertical_mode.lower().replace("-", "_")
     if mode == "off":
         return None
 
     is_landscape = True
+    width = 1920
+    height = 1080
     if probe:
         is_landscape = probe.is_landscape
+        width = probe.width
+        height = probe.height
 
-    # Mode auto: hanya terapkan crop jika video berformat landscape
+    if not is_landscape and mode in ("auto", "speaker", "smart_crop"):
+        return None
+
+    # Mode Smart Speaker Tracking / Active Speaker Follow
+    if mode in ("speaker", "smart_crop", "face", "speaker_tracking") and source_video and source_video.exists():
+        try:
+            speaker_filter = generate_speaker_crop_filter(
+                video_path=source_video,
+                start_time=start_time,
+                duration=duration,
+                vertical_mode="speaker",
+                video_width=width,
+                video_height=height
+            )
+            return speaker_filter
+        except Exception as e:
+            logger.warning(f"Smart speaker crop gagal, fallback ke center crop: {e}")
+            return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+
+    # Mode Dual-Speaker Podcast Split (Tumpuk Atas & Bawah)
+    if mode in ("split", "speaker_split", "podcast") and source_video and source_video.exists():
+        try:
+            split_filter = generate_speaker_crop_filter(
+                video_path=source_video,
+                start_time=start_time,
+                duration=duration,
+                vertical_mode="split",
+                video_width=width,
+                video_height=height
+            )
+            return split_filter
+        except Exception as e:
+            logger.warning(f"Dual-speaker split gagal, fallback ke center crop: {e}")
+            return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+
+    # Mode auto: coba deteksi pembicara terlebih dahulu, jika gagal center crop
     if mode == "auto":
-        if not is_landscape:
-            return None
-        # Default auto adalah center crop 1080x1920
+        if source_video and source_video.exists() and OPENCV_AVAILABLE:
+            try:
+                auto_filter = generate_speaker_crop_filter(
+                    video_path=source_video,
+                    start_time=start_time,
+                    duration=duration,
+                    vertical_mode="auto",
+                    video_width=width,
+                    video_height=height
+                )
+                return auto_filter
+            except Exception as e:
+                logger.debug(f"Auto speaker crop fallback: {e}")
         return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
 
     elif mode == "crop":
@@ -83,7 +140,13 @@ def render_single_clip(
     vf_filters: List[str] = []
 
     # Filter Vertikal
-    v_filter = build_vertical_filter(vertical_mode, probe)
+    v_filter = build_vertical_filter(
+        vertical_mode=vertical_mode,
+        probe=probe,
+        source_video=source_video,
+        start_time=clip.start_time,
+        duration=clip.duration
+    )
     if v_filter:
         vf_filters.append(v_filter)
 

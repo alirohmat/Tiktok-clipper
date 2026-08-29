@@ -154,9 +154,9 @@ def main_cli(
         help="Bakar teks subtitle otomatis ke dalam video (hardsub)"
     ),
     vertical: str = typer.Option(
-        "auto",
+        "speaker",
         "--vertical",
-        help="Format vertikal 9:16: 'auto' (crop jika landscape), 'crop' (tengah), 'pad' (black bar), 'off' (asli)"
+        help="Format vertikal 9:16: 'speaker' (Active Speaker Tracking), 'split' (Dual Podcast Split), 'auto' (Smart Face Detect), 'crop' (Center Crop), 'pad' (Pillarbox), 'off' (Asli)"
     ),
     analyze_only: bool = typer.Option(
         False,

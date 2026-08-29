@@ -1,0 +1,52 @@
+{
+  "app_version": "1.0.0",
+  "created_at": "2026-08-29T04:31:18.561470",
+  "source_type": "file",
+  "source_input": "sample:podcast",
+  "source_video_path": "cache/sample_podcast_demo.mp4",
+  "source_duration": 35.0,
+  "source_resolution": "1920x1080",
+  "niche": "bisnis",
+  "total_segments": 7,
+  "target_clips_count": 1,
+  "successful_clips_count": 1,
+  "settings": {
+    "min_duration": 5,
+    "max_duration": 15,
+    "num_clips": 1,
+    "vertical": "speaker",
+    "subtitles": true
+  },
+  "clips": [
+    {
+      "index": 1,
+      "title": "Rahasia Cashflow Bisnis Pemula (Part 1)",
+      "slug": "rahasia-cashflow-bisnis-pemula-part-1",
+      "start_time": 0.0,
+      "end_time": 10.0,
+      "duration": 10.0,
+      "start_segment_id": 1,
+      "end_segment_id": 2,
+      "score": 95,
+      "hook": "90% bisnis pemula bangkrut bukan karena produk jelek tapi salah atur uang dingin!",
+      "caption": "Rahasia Cashflow Bisnis Pemula untuk pemula. Simak cara membagi rekening operasional bisnis agar modal tidak habis. Jangan lupa terapkan tips ini untuk hasil maksimal.",
+      "hashtags": [
+        "bisnis",
+        "tips2026",
+        "belajarbisnis",
+        "viraltiktok",
+        "edukasi"
+      ],
+      "cta": "Save video ini biar nggak lupa pas praktek nanti!",
+      "reason": "Hook pembuka emosional yang menghentikan scroll dengan resolusi solusi terstruktur.",
+      "loop_suggestion": "Kalimat akhir menyambung langsung dengan masalah di hook awal.",
+      "transcript_text": "Rahasia terbesar menghasilkan jutaan rupiah dari video pendek bukan soal modal besar. Banyak orang gagal di bulan pertama karena salah paham soal retensi audiens.",
+      "output_video_path": "/app/applet/output/run-20260829043111-y155/clips/01-rahasia-cashflow-bisnis-pemula-part-1.mp4",
+      "output_srt_path": "/app/applet/output/run-20260829043111-y155/clips/01-rahasia-cashflow-bisnis-pemula-part-1.srt",
+      "output_json_path": "/app/applet/output/run-20260829043111-y155/clips/01-rahasia-cashflow-bisnis-pemula-part-1.json",
+      "subtitles_burned": true,
+      "render_success": true,
+      "error_message": null
+    }
+  ]
+}

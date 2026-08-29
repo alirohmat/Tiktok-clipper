@@ -1,0 +1,40 @@
+{
+  "text": "Rahasia terbesar menghasilkan jutaan rupiah dari video pendek bukan soal modal besar. Banyak orang gagal di bulan pertama karena salah paham soal retensi audiens. Terapkan 3 langkah praktis ini untuk menaikkan engagement dan followers organik.",
+  "segments": [
+    {
+      "id": 1,
+      "start": 0.0,
+      "end": 5.0,
+      "text": "Rahasia terbesar menghasilkan jutaan rupiah dari video pendek bukan soal modal besar.",
+      "seek": 0.0,
+      "temperature": 0.0,
+      "avg_logprob": 0.0,
+      "compression_ratio": 0.0,
+      "no_speech_prob": 0.0
+    },
+    {
+      "id": 2,
+      "start": 5.0,
+      "end": 10.0,
+      "text": "Banyak orang gagal di bulan pertama karena salah paham soal retensi audiens.",
+      "seek": 0.0,
+      "temperature": 0.0,
+      "avg_logprob": 0.0,
+      "compression_ratio": 0.0,
+      "no_speech_prob": 0.0
+    },
+    {
+      "id": 3,
+      "start": 10.0,
+      "end": 15.0,
+      "text": "Terapkan 3 langkah praktis ini untuk menaikkan engagement dan followers organik.",
+      "seek": 0.0,
+      "temperature": 0.0,
+      "avg_logprob": 0.0,
+      "compression_ratio": 0.0,
+      "no_speech_prob": 0.0
+    }
+  ],
+  "language": "id",
+  "duration": 15.001
+}

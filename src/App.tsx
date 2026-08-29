@@ -1,9 +1,9 @@
 /**
- * @license
- * SPDX-License-Identifier: Apache-2.0
+ * TikTok Clipper Web Studio 2026
+ * Generator Klip Vertikal Pendek Otomatis dengan AI & Active Speaker Tracking
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from "react";
 import {
   Video,
   Play,
@@ -29,47 +29,180 @@ import {
   Sliders,
   ExternalLink,
   HelpCircle,
-  FolderOpen
-} from 'lucide-react';
+  FolderOpen,
+  UploadCloud,
+  Film,
+  UserCheck,
+  History,
+  Zap,
+  Loader2,
+} from "lucide-react";
+import {
+  PortraitCropMode,
+  SourceInputType,
+  ContentNiche,
+  JobData,
+  SystemStatus,
+} from "./types";
+import { CropModeSelector } from "./components/CropModeSelector";
+import { JobProgress } from "./components/JobProgress";
+import { ClipCard } from "./components/ClipCard";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'generator' | 'strategy' | 'inspector' | 'env' | 'guide'>('generator');
-  
-  // State Generator Perintah
-  const [sourceType, setSourceType] = useState<'input' | 'url'>('input');
-  const [inputVal, setInputVal] = useState('podcast_bisnis_eps12.mp4');
-  const [urlVal, setUrlVal] = useState('https://www.youtube.com/watch?v=sample-video');
-  const [niche, setNiche] = useState('bisnis');
-  const [numClips, setNumClips] = useState(3);
+  const [activeTab, setActiveTab] = useState<
+    "studio" | "history" | "strategy" | "cli" | "env" | "guide"
+  >("studio");
+
+  // Form State
+  const [sourceType, setSourceType] = useState<SourceInputType>("sample");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [urlVal, setUrlVal] = useState("https://www.youtube.com/watch?v=sample-podcast");
+  const [niche, setNiche] = useState<ContentNiche>("bisnis");
+  const [numClips, setNumClips] = useState(2);
   const [minDur, setMinDur] = useState(15);
   const [maxDur, setMaxDur] = useState(60);
   const [subtitles, setSubtitles] = useState(true);
-  const [vertical, setVertical] = useState('auto');
-  const [analyzeOnly, setAnalyzeOnly] = useState(false);
-  const [debug, setDebug] = useState(false);
+  const [vertical, setVertical] = useState<PortraitCropMode>("speaker");
+  const [groqApiKey, setGroqApiKey] = useState("");
+
+  // Generation & Active Job State
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [currentJob, setCurrentJob] = useState<JobData | null>(null);
+  const [jobsHistory, setJobsHistory] = useState<JobData[]>([]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
 
-  // State Inspector Preview
-  const [inspectorFile, setInspectorFile] = useState<'summary' | 'manifest' | 'transcript' | 'srt' | 'clip_json'>('summary');
-  const [selectedClipIdx, setSelectedClipIdx] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Buat String Command CLI
-  const generateCommand = () => {
-    const parts = ['python main.py'];
-    if (sourceType === 'input') {
-      parts.push(`--input "${inputVal || 'video.mp4'}"`);
-    } else {
-      parts.push(`--url "${urlVal || 'https://...'}"`);
+  // Fetch System Status & Existing Jobs on mount
+  useEffect(() => {
+    fetchSystemStatus();
+    fetchJobsList();
+  }, []);
+
+  // Poll current job status
+  useEffect(() => {
+    if (!activeJobId) return;
+
+    const checkJob = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${activeJobId}`);
+        if (!res.ok) return;
+        const data: JobData = await res.json();
+        setCurrentJob(data);
+
+        if (data.status === "completed" || data.status === "error") {
+          setIsGenerating(false);
+          fetchJobsList(); // Refresh history
+          if (pollingRef.current) clearInterval(pollingRef.current);
+        }
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
+    };
+
+    checkJob();
+    pollingRef.current = setInterval(checkJob, 1500);
+
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [activeJobId]);
+
+  const fetchSystemStatus = async () => {
+    try {
+      const res = await fetch("/api/system-status");
+      if (res.ok) {
+        const data = await res.json();
+        setSystemStatus(data);
+      }
+    } catch (e) {
+      console.warn("Could not fetch system status:", e);
     }
-    if (niche !== 'umum') parts.push(`--niche ${niche}`);
-    if (numClips !== 3) parts.push(`--num-clips ${numClips}`);
-    if (minDur !== 15) parts.push(`--min-duration ${minDur}`);
-    if (maxDur !== 60) parts.push(`--max-duration ${maxDur}`);
-    if (!subtitles) parts.push('--no-subtitles');
-    if (vertical !== 'auto') parts.push(`--vertical ${vertical}`);
-    if (analyzeOnly) parts.push('--analyze-only');
-    if (debug) parts.push('--debug');
-    return parts.join(' ');
+  };
+
+  const fetchJobsList = async () => {
+    try {
+      const res = await fetch("/api/jobs");
+      if (res.ok) {
+        const data = await res.json();
+        setJobsHistory(data.jobs || []);
+        // If there's an existing completed job and no active job selected yet, show the latest one
+        if (!activeJobId && data.jobs && data.jobs.length > 0) {
+          const latest = data.jobs[0];
+          setActiveJobId(latest.id);
+          setCurrentJob(latest);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch jobs history:", e);
+    }
+  };
+
+  const handleStartGeneration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setIsGenerating(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("sourceType", sourceType);
+      formData.append("niche", niche);
+      formData.append("numClips", String(numClips));
+      formData.append("minDuration", String(minDur));
+      formData.append("maxDuration", String(maxDur));
+      formData.append("vertical", vertical);
+      formData.append("subtitles", String(subtitles));
+      if (groqApiKey.trim()) {
+        formData.append("groqApiKey", groqApiKey.trim());
+      }
+
+      if (sourceType === "upload") {
+        if (!selectedFile) {
+          setErrorMessage("Silakan pilih file video lokal terlebih dahulu.");
+          setIsGenerating(false);
+          return;
+        }
+        formData.append("videoFile", selectedFile);
+      } else if (sourceType === "url") {
+        if (!urlVal.trim()) {
+          setErrorMessage("Silakan masukkan tautan URL video.");
+          setIsGenerating(false);
+          return;
+        }
+        formData.append("url", urlVal.trim());
+      }
+
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Gagal memulai pembuatan video.");
+      }
+
+      setActiveJobId(data.jobId);
+      // Scroll smoothly to progress card
+      setTimeout(() => {
+        const el = document.getElementById("job-progress-card");
+        if (el) el.scrollIntoView({ behavior: "smooth" });
+      }, 300);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Terjadi kesalahan saat memulai proses.");
+      setIsGenerating(false);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+    }
   };
 
   const handleCopy = (text: string) => {
@@ -78,64 +211,28 @@ export default function App() {
     setTimeout(() => setCopiedCmd(false), 2000);
   };
 
-  // Contoh Data Klip
-  const sampleClips = [
-    {
-      index: 1,
-      title: "Rahasia Cashflow Bisnis Pemula",
-      slug: "01-rahasia-cashflow-bisnis-pemula",
-      duration: 38.4,
-      start: "01:14",
-      end: "01:52",
-      score: 94,
-      hook: "90% bisnis pemula bangkrut di tahun pertama cuma karena salah paham soal uang dingin!",
-      caption: "Rahasia Cashflow Bisnis Pemula yang wajib dipahami sebelum buka usaha! Jangan sampai modal habis di awal. Simak tips pembagian rekening operasional ini.",
-      hashtags: ["bisnispemula", "keuanganusaha", "belajarbisnis", "tipsusaha"],
-      cta: "Save video ini biar nggak bingung pas mulai hitung modal nanti!",
-      loop: "Di akhir video menyebutkan pembagian 3 rekening, yang langsung menjadi jawaban dari masalah bangkrut di hook awal.",
-      reason: "Hook 3 detik sangat emosional dan relevan bagi target audiens wirausaha dengan penyelesaian masalah praktis.",
-      transcriptText: "Banyak orang mikir buka bisnis itu cuma soal jualan laku atau enggak. Padahal 90 persen bisnis pemula bangkrut di tahun pertama cuma karena salah paham soal uang dingin! Pisahin rekening pribadi sama rekening operasional sejak hari pertama..."
-    },
-    {
-      index: 2,
-      title: "Trik Pricing Anti Perang Harga",
-      slug: "02-trik-pricing-anti-perang-harga",
-      duration: 42.1,
-      start: "04:30",
-      end: "05:12",
-      score: 89,
-      hook: "Jangan pernah nurunin harga kalau kompetitor kamu banting harga gila-gilaan!",
-      caption: "Trik Pricing Anti Perang Harga untuk UMKM. Cara jualan produk premium tanpa takut kalah saing dengan produk murah di marketplace.",
-      hashtags: ["strategipricing", "umkmindonesia", "omsetnaik", "branding"],
-      cta: "Share ke partner bisnis kamu biar gak ikut-ikutan banting harga!",
-      loop: "Kalimat penutup 'fokus ke nilai bukan diskon' langsung menyambung ke hook awal 'jangan turunin harga'.",
-      reason: "Menjawab ketakutan terbesar pelaku usaha (perang harga) dengan solusi anchoring value.",
-      transcriptText: "Kalau kompetitor kamu turun harga 50%, kamu jangan ikutan panik. Buat bundle paket bernilai tinggi yang nggak bisa dibandingin head to head sama produk mereka..."
-    },
-    {
-      index: 3,
-      title: "Mindset Rekrut Karyawan Pertama",
-      slug: "03-mindset-rekrut-karyawan-pertama",
-      duration: 29.5,
-      start: "08:15",
-      end: "08:44",
-      score: 85,
-      hook: "Kapan waktu paling tepat buat rekrut karyawan pertama?",
-      caption: "Mindset Rekrut Karyawan Pertama yang efektif. Kapan saat yang pas delegasi tugas tanpa membebani keuangan usaha?",
-      hashtags: ["manajemenbisnis", "hiringtips", "scaleup", "timkerja"],
-      cta: "Ketik di kolom komentar, kamu udah punya berapa tim sekarang?",
-      loop: "Kriteria omset stabil di akhir klip menjawab pertanyaan waktu yang tepat di hook awal.",
-      reason: "Topik actionable, durasi padat di bawah 30 detik untuk completion rate optimal.",
-      transcriptText: "Bukan pas kamu capek, tapi pas waktu kamu lebih berharga untuk strategi daripada ngerjain hal teknis yang berulang..."
+  const generateCLICommand = () => {
+    const parts = ["python main.py"];
+    if (sourceType === "upload") {
+      parts.push(`--input "${selectedFile?.name || "video.mp4"}"`);
+    } else if (sourceType === "url") {
+      parts.push(`--url "${urlVal || "https://..."}"`);
+    } else {
+      parts.push(`--input "sample_podcast.mp4"`);
     }
-  ];
-
-  const currentClip = sampleClips[selectedClipIdx];
+    if (niche !== "umum") parts.push(`--niche ${niche}`);
+    if (numClips !== 3) parts.push(`--num-clips ${numClips}`);
+    if (minDur !== 15) parts.push(`--min-duration ${minDur}`);
+    if (maxDur !== 60) parts.push(`--max-duration ${maxDur}`);
+    if (!subtitles) parts.push("--no-subtitles");
+    if (vertical !== "speaker") parts.push(`--vertical ${vertical}`);
+    return parts.join(" ");
+  };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-pink-500 selection:text-white">
       {/* Header Utama */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 via-rose-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-pink-500/20">
@@ -144,375 +241,481 @@ export default function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-bold tracking-tight text-white">TikTok Clipper</h1>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-400 border border-pink-500/30 font-medium">
-                  Algoritma 2026
+                <span className="text-xs px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30 font-medium">
+                  Smart Speaker Tracking
                 </span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 font-medium">
-                  Groq AI Powered
+                <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-medium hidden sm:inline">
+                  Strategi TikTok 2026
                 </span>
               </div>
-              <p className="text-xs text-slate-400">CLI Python & Web Companion untuk Otomasi Klip Vertikal Pendek</p>
+              <p className="text-xs text-slate-400">
+                Otomasi Pemotongan Klip Vertikal 9:16 dengan AI & Pelacakan Pembicara Aktif
+              </p>
             </div>
           </div>
 
           {/* Navigasi Tab */}
           <nav className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
             <button
-              onClick={() => setActiveTab('generator')}
+              id="tab-studio"
+              onClick={() => setActiveTab("studio")}
               className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
-                activeTab === 'generator'
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                activeTab === "studio"
+                  ? "bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
               }`}
             >
-              <Terminal className="w-3.5 h-3.5" />
-              CLI Generator
+              <Zap className="w-3.5 h-3.5" />
+              Studio Generator
             </button>
             <button
-              onClick={() => setActiveTab('strategy')}
+              id="tab-history"
+              onClick={() => setActiveTab("history")}
               className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
-                activeTab === 'strategy'
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                activeTab === "history"
+                  ? "bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              Riwayat Klip ({jobsHistory.length})
+            </button>
+            <button
+              id="tab-strategy"
+              onClick={() => setActiveTab("strategy")}
+              className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
+                activeTab === "strategy"
+                  ? "bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
               }`}
             >
               <Flame className="w-3.5 h-3.5" />
               Strategi 2026
             </button>
             <button
-              onClick={() => setActiveTab('inspector')}
+              id="tab-cli"
+              onClick={() => setActiveTab("cli")}
               className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
-                activeTab === 'inspector'
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                activeTab === "cli"
+                  ? "bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
               }`}
             >
-              <Layers className="w-3.5 h-3.5" />
-              Output Inspector
-            </button>
-            <button
-              onClick={() => setActiveTab('env')}
-              className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
-                activeTab === 'env'
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-              }`}
-            >
-              <SettingsIcon className="w-3.5 h-3.5" />
-              .env Config
-            </button>
-            <button
-              onClick={() => setActiveTab('guide')}
-              className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium ${
-                activeTab === 'guide'
-                  ? 'bg-gradient-to-r from-pink-500 to-rose-600 text-white shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
-              }`}
-            >
-              <HelpCircle className="w-3.5 h-3.5" />
-              Panduan
+              <Terminal className="w-3.5 h-3.5" />
+              CLI Terminal
             </button>
           </nav>
         </div>
       </header>
 
-      {/* Konten Utama */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
-        {/* TAB 1: CLI GENERATOR & BUILDER */}
-        {activeTab === 'generator' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Form Konfigurasi Perintah */}
-            <div className="lg:col-span-7 space-y-5">
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-5">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full space-y-6">
+        {/* TAB 1: STUDIO GENERATOR */}
+        {activeTab === "studio" && (
+          <div className="space-y-6">
+            {/* Generator Form Card */}
+            <form onSubmit={handleStartGeneration} className="space-y-6">
+              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 sm:p-6 shadow-xl space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
                   <div className="flex items-center gap-2">
-                    <Sliders className="w-4 h-4 text-pink-400" />
-                    <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Konfigurasi Parameter CLI</h2>
+                    <div className="w-8 h-8 rounded-xl bg-pink-500/20 text-pink-400 flex items-center justify-center">
+                      <Sliders className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                        Generator Video Klip TikTok
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Pilih sumber video, atur mode cropping wajah pembicara, dan buat klip instan.
+                      </p>
+                    </div>
                   </div>
-                  <span className="text-xs text-slate-400">main.py options</span>
+
+                  {systemStatus && (
+                    <div className="flex items-center gap-2 text-[11px] bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      <span className="text-slate-300">OpenCV Face Tracker:</span>
+                      <span className="text-emerald-400 font-semibold">Aktif</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Pilihan Sumber Video */}
-                <div className="space-y-2">
-                  <label className="text-xs font-semibold text-slate-300">Sumber Video</label>
-                  <div className="grid grid-cols-2 gap-2">
+                {/* 1. Sumber Input Video */}
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <Film className="w-4 h-4 text-cyan-400" />
+                    1. Sumber Video Sumber
+                  </label>
+
+                  {/* Tabs Pemilih Sumber */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <button
+                      id="source-btn-sample"
                       type="button"
-                      onClick={() => setSourceType('input')}
-                      className={`p-2.5 rounded-xl border text-xs font-medium flex items-center justify-center gap-2 transition-all ${
-                        sourceType === 'input'
-                          ? 'bg-pink-500/15 border-pink-500 text-pink-300 shadow-sm'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      onClick={() => setSourceType("sample")}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        sourceType === "sample"
+                          ? "bg-pink-500/15 border-pink-500 text-pink-300 ring-1 ring-pink-500/30"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
                       }`}
                     >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      File Lokal (--input)
+                      <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
+                        <Sparkles className="w-4 h-4 text-pink-400" />
+                        Video Sampel Podcast (1-Click)
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Uji coba instan dengan podcast 2 pembicara (Host & Guest) tanpa perlu upload.
+                      </p>
                     </button>
+
                     <button
+                      id="source-btn-upload"
                       type="button"
-                      onClick={() => setSourceType('url')}
-                      className={`p-2.5 rounded-xl border text-xs font-medium flex items-center justify-center gap-2 transition-all ${
-                        sourceType === 'url'
-                          ? 'bg-cyan-500/15 border-cyan-500 text-cyan-300 shadow-sm'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      onClick={() => setSourceType("upload")}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        sourceType === "upload"
+                          ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 ring-1 ring-cyan-500/30"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
                       }`}
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      Tautan URL (--url)
+                      <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
+                        <UploadCloud className="w-4 h-4 text-cyan-400" />
+                        Unggah File Lokal (MP4/MOV)
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Pilih video dari komputer/perangkat Anda untuk dipotong.
+                      </p>
+                    </button>
+
+                    <button
+                      id="source-btn-url"
+                      type="button"
+                      onClick={() => setSourceType("url")}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        sourceType === "url"
+                          ? "bg-purple-500/15 border-purple-500 text-purple-300 ring-1 ring-purple-500/30"
+                          : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 font-semibold text-xs text-white mb-1">
+                        <ExternalLink className="w-4 h-4 text-purple-400" />
+                        Tautan Video (URL / YouTube)
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Unduh otomatis dengan yt-dlp dari YouTube, TikTok, dll.
+                      </p>
                     </button>
                   </div>
 
-                  {sourceType === 'input' ? (
+                  {/* Input Source Body */}
+                  {sourceType === "upload" && (
                     <div className="mt-2">
-                      <input
-                        type="text"
-                        value={inputVal}
-                        onChange={(e) => setInputVal(e.target.value)}
-                        placeholder="video.mp4 atau jalur/ke/video.mp4"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-pink-500 font-mono"
-                      />
-                      <p className="text-[11px] text-slate-500 mt-1">Mendukung format MP4, MKV, MOV, WebM, dll.</p>
+                      <div
+                        onClick={() => fileInputRef.current?.click()}
+                        className="border-2 border-dashed border-slate-700 hover:border-cyan-500 rounded-2xl p-6 text-center cursor-pointer bg-slate-950/60 transition-colors"
+                      >
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="video/*"
+                          onChange={handleFileChange}
+                          className="hidden"
+                        />
+                        <UploadCloud className="w-8 h-8 text-cyan-400 mx-auto mb-2" />
+                        {selectedFile ? (
+                          <div className="space-y-1">
+                            <span className="text-xs font-semibold text-white block">
+                              {selectedFile.name}
+                            </span>
+                            <span className="text-[11px] text-slate-400 font-mono">
+                              Ukuran: {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <span className="text-xs font-semibold text-slate-300 block">
+                              Klik untuk memilih file video lokal atau drag & drop di sini
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              Format: MP4, MOV, MKV, WebM, AVI (Maksimal 2GB)
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  ) : (
+                  )}
+
+                  {sourceType === "url" && (
                     <div className="mt-2">
                       <input
                         type="text"
                         value={urlVal}
                         onChange={(e) => setUrlVal(e.target.value)}
                         placeholder="https://www.youtube.com/watch?v=..."
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
                       />
-                      <p className="text-[11px] text-slate-500 mt-1">Otomatis diunduh dengan yt-dlp (max 1080p, audio m4a).</p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Sistem akan mengunduh video dengan format kualitas optimal (1080p).
+                      </p>
+                    </div>
+                  )}
+
+                  {sourceType === "sample" && (
+                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 text-xs text-slate-300 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-pink-500/20 flex items-center justify-center text-pink-400 font-bold">
+                          🎬
+                        </div>
+                        <div>
+                          <span className="font-semibold text-white block">
+                            Podcast Simulasi Bisnis & Strategi 2026
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            Durasi 35 detik, 2 pembicara berhadapan dengan dialog terstruktur.
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                        Siap Uji Coba Instan
+                      </span>
                     </div>
                   )}
                 </div>
 
-                {/* Niche & Jumlah Klip */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* 2. Mode Cropping Speaker Tracking */}
+                <CropModeSelector value={vertical} onChange={setVertical} />
+
+                {/* 3. Parameter Niche & Pemotongan */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Niche Konten (--niche)</label>
+                    <label className="text-xs font-semibold text-slate-300">Niche Konten</label>
                     <select
                       value={niche}
-                      onChange={(e) => setNiche(e.target.value)}
+                      onChange={(e) => setNiche(e.target.value as ContentNiche)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-pink-500"
                     >
-                      <option value="umum">Umum (Default)</option>
                       <option value="bisnis">Bisnis & Finansial</option>
                       <option value="edukasi">Edukasi & Tutorial</option>
-                      <option value="motivasi">Motivasi & Self-Improvement</option>
-                      <option value="teknologi">Teknologi & Gadget</option>
+                      <option value="motivasi">Motivasi & Mindset</option>
+                      <option value="teknologi">Teknologi & AI</option>
                       <option value="komedi">Komedi & Hiburan</option>
                       <option value="kuliner">Kuliner & Resep</option>
-                      <option value="kesehatan">Kesehatan & Kebugaran</option>
+                      <option value="kesehatan">Kesehatan & Fitness</option>
+                      <option value="umum">Umum</option>
                     </select>
                   </div>
 
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-300 flex justify-between">
-                      <span>Jumlah Klip (--num-clips)</span>
-                      <span className="text-pink-400 font-mono">{numClips} klip</span>
+                      <span>Jumlah Klip</span>
+                      <span className="text-pink-400 font-mono font-bold">{numClips} klip</span>
                     </label>
                     <input
                       type="range"
                       min="1"
-                      max="10"
+                      max="6"
                       value={numClips}
                       onChange={(e) => setNumClips(parseInt(e.target.value))}
-                      className="w-full accent-pink-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                      className="w-full accent-pink-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
                     />
                     <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                      <span>1 klip</span>
-                      <span>3 (hemat)</span>
-                      <span>10 klip</span>
+                      <span>1</span>
+                      <span>2 (Rekomendasi)</span>
+                      <span>6</span>
                     </div>
                   </div>
-                </div>
-
-                {/* Durasi Min / Max */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300 flex justify-between">
-                      <span>Min Durasi (--min-duration)</span>
-                      <span className="text-cyan-400 font-mono">{minDur}s</span>
-                    </label>
-                    <input
-                      type="range"
-                      min="10"
-                      max="30"
-                      value={minDur}
-                      onChange={(e) => setMinDur(parseInt(e.target.value))}
-                      className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-                    />
-                  </div>
 
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-300 flex justify-between">
-                      <span>Max Durasi (--max-duration)</span>
-                      <span className="text-cyan-400 font-mono">{maxDur}s</span>
+                      <span>Rentang Durasi</span>
+                      <span className="text-cyan-400 font-mono font-bold">
+                        {minDur}s - {maxDur}s
+                      </span>
                     </label>
-                    <input
-                      type="range"
-                      min="30"
-                      max="120"
-                      value={maxDur}
-                      onChange={(e) => setMaxDur(parseInt(e.target.value))}
-                      className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-                    />
-                  </div>
-                </div>
-
-                {/* Opsi Video Vertikal & Subtitle */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Format Vertikal (--vertical)</label>
-                    <select
-                      value={vertical}
-                      onChange={(e) => setVertical(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-pink-500"
-                    >
-                      <option value="auto">auto (Otomatis crop jika landscape)</option>
-                      <option value="crop">crop (Center crop 1080x1920)</option>
-                      <option value="pad">pad (Skala + Black bar atas-bawah)</option>
-                      <option value="off">off (Biarkan rasio asli)</option>
-                    </select>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number"
+                        min="5"
+                        max="60"
+                        value={minDur}
+                        onChange={(e) => setMinDur(parseInt(e.target.value) || 15)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-100 font-mono text-center"
+                        placeholder="Min (s)"
+                      />
+                      <input
+                        type="number"
+                        min="15"
+                        max="180"
+                        value={maxDur}
+                        onChange={(e) => setMaxDur(parseInt(e.target.value) || 60)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-100 font-mono text-center"
+                        placeholder="Max (s)"
+                      />
+                    </div>
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300">Subtitle Hardsub (--subtitles)</label>
+                    <label className="text-xs font-semibold text-slate-300">Subtitle Hardsub</label>
                     <button
                       type="button"
                       onClick={() => setSubtitles(!subtitles)}
-                      className={`w-full p-2 rounded-xl border text-xs font-medium flex items-center justify-between px-3 transition-all ${
+                      className={`w-full py-2 px-3 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
                         subtitles
-                          ? 'bg-pink-500/15 border-pink-500 text-pink-300'
-                          : 'bg-slate-950 border-slate-800 text-slate-500'
+                          ? "bg-pink-500/15 border-pink-500 text-pink-300"
+                          : "bg-slate-950 border-slate-800 text-slate-500"
                       }`}
                     >
-                      <span>{subtitles ? 'Bakar Teks ke Video (Aktif)' : 'File .srt Saja (Nonaktif)'}</span>
-                      <span className={`w-2 h-2 rounded-full ${subtitles ? 'bg-pink-400' : 'bg-slate-600'}`}></span>
+                      <span>{subtitles ? "Teks Otomatis Aktif" : "Hanya Video"}</span>
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full ${
+                          subtitles ? "bg-pink-400" : "bg-slate-600"
+                        }`}
+                      />
                     </button>
                   </div>
                 </div>
 
-                {/* Flags Tambahan */}
-                <div className="flex flex-wrap items-center gap-4 pt-1 text-xs">
-                  <label className="flex items-center gap-2 cursor-pointer text-slate-400 hover:text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={analyzeOnly}
-                      onChange={(e) => setAnalyzeOnly(e.target.checked)}
-                      className="rounded bg-slate-950 border-slate-800 text-pink-500 focus:ring-0"
-                    />
-                    <span>--analyze-only (Hanya analisis JSON & summary)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer text-slate-400 hover:text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={debug}
-                      onChange={(e) => setDebug(e.target.checked)}
-                      className="rounded bg-slate-950 border-slate-800 text-pink-500 focus:ring-0"
-                    />
-                    <span>--debug (Log detail teknis)</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            {/* Kotak Perintah Terformat & Diagnostic Box */}
-            <div className="lg:col-span-5 space-y-5">
-              {/* Box Terminal Command */}
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Terminal className="w-4 h-4 text-emerald-400" />
-                    <h3 className="text-xs font-semibold text-white uppercase tracking-wider">Perintah Siap Dijalankan</h3>
+                {/* Error Banner */}
+                {errorMessage && (
+                  <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{errorMessage}</span>
                   </div>
+                )}
+
+                {/* Tombol Generate Utama */}
+                <div className="pt-2">
                   <button
-                    onClick={() => handleCopy(generateCommand())}
-                    className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-pink-500/20 text-pink-300 hover:bg-pink-500/30 border border-pink-500/30 transition-all"
+                    id="btn-generate-video"
+                    type="submit"
+                    disabled={isGenerating}
+                    className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-pink-500 via-rose-500 to-cyan-500 hover:from-pink-600 hover:via-rose-600 hover:to-cyan-600 disabled:opacity-50 text-white font-bold text-sm tracking-wide shadow-xl shadow-pink-500/25 flex items-center justify-center gap-2.5 transition-all transform hover:scale-[1.005] active:scale-[0.995]"
                   >
-                    {copiedCmd ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedCmd ? 'Tersalin!' : 'Salin Perintah'}
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span>Sedang Memproses Video & Pelacakan Pembicara...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-5 h-5 text-yellow-300 fill-yellow-300" />
+                        <span>⚡ GENERATE VIDEO KLIP TIKTOK SEKARANG</span>
+                      </>
+                    )}
                   </button>
                 </div>
-
-                <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800/80 font-mono text-xs text-pink-300 break-all leading-relaxed shadow-inner">
-                  {generateCommand()}
-                </div>
-
-                <div className="text-[11px] text-slate-400 space-y-1">
-                  <p>💡 <strong>Cara menjalankan:</strong> Buka terminal / CMD di folder proyek, lalu paste perintah di atas.</p>
-                </div>
               </div>
+            </form>
 
-              {/* Box Quick Actions */}
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-3">
-                <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-cyan-400" />
-                  Perintah Cepat Tambahan
-                </h3>
+            {/* Live Progress Card */}
+            {currentJob && <JobProgress job={currentJob} />}
 
-                <div className="space-y-2">
-                  <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-semibold text-slate-200">Pemeriksaan Sistem (--check)</div>
-                      <div className="font-mono text-[11px] text-slate-500">python main.py --check</div>
-                    </div>
-                    <button
-                      onClick={() => handleCopy('python main.py --check')}
-                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white"
-                      title="Salin"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
+            {/* Generated Clips Gallery */}
+            {currentJob && currentJob.clips && currentJob.clips.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Flame className="w-5 h-5 text-pink-500" />
+                    <h3 className="text-base font-bold text-white">
+                      Hasil Klip Video ({currentJob.clips.length} Klip Siap Diunduh)
+                    </h3>
                   </div>
+                  <span className="text-xs text-slate-400">
+                    Format Vertikal 9:16 (1080x1920) dengan Loudnorm EBU R128
+                  </span>
+                </div>
 
-                  <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
-                    <div>
-                      <div className="font-semibold text-slate-200">Eksekusi Windows Otomatis (.bat)</div>
-                      <div className="font-mono text-[11px] text-slate-500">run_windows.bat</div>
-                    </div>
-                    <button
-                      onClick={() => handleCopy('run_windows.bat')}
-                      className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white"
-                      title="Salin"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                <div className="grid grid-cols-1 gap-5">
+                  {currentJob.clips.map((clip) => (
+                    <ClipCard key={clip.index} clip={clip} jobId={currentJob.id} />
+                  ))}
                 </div>
               </div>
-
-              {/* Status Environment Container */}
-              <div className="bg-slate-900/60 rounded-2xl border border-slate-800/80 p-4 text-xs space-y-2">
-                <div className="flex items-center justify-between text-slate-400">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                    FFmpeg & FFprobe
-                  </span>
-                  <span className="text-emerald-400 font-mono">v4.4.2 Siap</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                    Python Runtime
-                  </span>
-                  <span className="text-emerald-400 font-mono">3.10+ Siap</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                    Pustaka Eksternal
-                  </span>
-                  <span className="text-emerald-400 font-mono">Typer, Rich, Groq, yt-dlp</span>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         )}
 
-        {/* TAB 2: STRATEGI TIKTOK 2026 */}
-        {activeTab === 'strategy' && (
+        {/* TAB 2: RIWAYAT KLIP */}
+        {activeTab === "history" && (
+          <div className="space-y-4">
+            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-white">Riwayat Pemotongan Video</h2>
+                <p className="text-xs text-slate-400">
+                  Daftar seluruh proses generate video yang telah dilakukan sebelumnya.
+                </p>
+              </div>
+              <button
+                onClick={fetchJobsList}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Segarkan
+              </button>
+            </div>
+
+            {jobsHistory.length === 0 ? (
+              <div className="p-12 text-center bg-slate-900/40 rounded-2xl border border-slate-800/80 space-y-2">
+                <Film className="w-10 h-10 text-slate-600 mx-auto" />
+                <h3 className="text-sm font-bold text-slate-300">Belum Ada Riwayat Klip</h3>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                  Klik tab <strong>Studio Generator</strong> untuk membuat klip pertama Anda.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {jobsHistory.map((job) => (
+                  <div
+                    key={job.id}
+                    className="bg-slate-900/80 rounded-2xl border border-slate-800 p-4 space-y-3 hover:border-slate-700 transition-all flex flex-col justify-between"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
+                          {job.id}
+                        </span>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                            job.status === "completed"
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              : job.status === "error"
+                              ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                              : "bg-pink-500/20 text-pink-300 border border-pink-500/30"
+                          }`}
+                        >
+                          {job.status}
+                        </span>
+                      </div>
+
+                      <h4 className="text-xs font-bold text-white line-clamp-1">{job.sourceLabel}</h4>
+
+                      <div className="text-[11px] text-slate-400 space-y-1">
+                        <div>Niche: <strong className="text-slate-200 capitalize">{job.niche}</strong></div>
+                        <div>Mode: <strong className="text-slate-200 capitalize">{job.vertical}</strong></div>
+                        <div>Jumlah Klip: <strong className="text-pink-400">{job.clips?.length || job.numClips} klip</strong></div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setActiveJobId(job.id);
+                        setCurrentJob(job);
+                        setActiveTab("studio");
+                      }}
+                      className="w-full py-2 bg-pink-500/15 hover:bg-pink-500/25 text-pink-300 rounded-xl text-xs font-semibold border border-pink-500/30 flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      Buka & Putar Klip
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: STRATEGI TIKTOK 2026 */}
+        {activeTab === "strategy" && (
           <div className="space-y-6">
             <div className="bg-gradient-to-r from-pink-950/40 via-purple-950/40 to-slate-900 border border-pink-900/40 rounded-2xl p-6">
               <div className="flex items-start gap-4">
@@ -522,7 +725,7 @@ export default function App() {
                 <div>
                   <h2 className="text-lg font-bold text-white">Prinsip Algoritma TikTok 2026 pada AI Clipper</h2>
                   <p className="text-xs text-slate-300 mt-1 max-w-3xl leading-relaxed">
-                    Setiap detik video dipindai oleh model AI Groq LLM (temperature 0.2) dengan kriteria evaluasi ketat berikut untuk memastikan klip memiliki probabilitas retensi dan sebaran organik tertinggi:
+                    Setiap detik video dipindai oleh AI dengan kriteria evaluasi ketat berikut untuk memastikan klip memiliki probabilitas retensi dan sebaran organik tertinggi:
                   </p>
                 </div>
               </div>
@@ -535,7 +738,7 @@ export default function App() {
                 </div>
                 <h3 className="text-sm font-bold text-white">Hook 3 Detik Pertama</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Menghilangkan basa-basi intro (&quot;halo guys&quot;, &quot;kembali lagi&quot;). Klip harus dimulai dari pertanyaan tajam, fakta mengejutkan, atau pernyataan paradoks yang menghentikan scroll.
+                  Menghilangkan basa-basi intro. Klip harus dimulai dari pertanyaan tajam, fakta mengejutkan, atau paradoks yang menghentikan scroll seketika.
                 </p>
               </div>
 
@@ -543,9 +746,9 @@ export default function App() {
                 <div className="w-8 h-8 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold text-xs">
                   02
                 </div>
-                <h3 className="text-sm font-bold text-white">High Completion Rate & Payoff</h3>
+                <h3 className="text-sm font-bold text-white">Smart Active Speaker Follow</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Struktur klip dipastikan memiliki klimaks dan penyelesaian (payoff) yang tuntas. Mencegah klip terpotong nanggung yang menyebabkan kekecewaan penonton.
+                  Format vertikal 9:16 dipotong cerdas dengan deteksi wajah OpenCV sehingga subjek yang sedang berbicara selalu berada tepat di tengah layar.
                 </p>
               </div>
 
@@ -555,7 +758,7 @@ export default function App() {
                 </div>
                 <h3 className="text-sm font-bold text-white">Save & Share Worthy</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Algoritma memprioritaskan momen edukatif, tutorial langkah demi langkah, template, atau checklist yang mendorong penonton menekan tombol <em>Save/Bookmark</em>.
+                  Algoritma memprioritaskan momen edukatif, checklist, dan panduan yang mendorong penonton menekan tombol Bookmark untuk disimpan.
                 </p>
               </div>
 
@@ -565,7 +768,7 @@ export default function App() {
                 </div>
                 <h3 className="text-sm font-bold text-white">SEO Caption Terindeks</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Kata kunci utama wajib muncul di 50 karakter pertama caption. Panjang ideal 120–220 karakter untuk menangkap penelusuran kata kunci TikTok Search Bar.
+                  Kata kunci utama wajib muncul di 50 karakter pertama caption untuk menangkap penelusuran kata kunci TikTok Search Bar.
                 </p>
               </div>
 
@@ -573,9 +776,9 @@ export default function App() {
                 <div className="w-8 h-8 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 font-bold text-xs">
                   05
                 </div>
-                <h3 className="text-sm font-bold text-white">Hashtags Terfokus (3-5)</h3>
+                <h3 className="text-sm font-bold text-white">Hashtags Niche Spesifik</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Bebas dari hashtag sampah seperti #fyp, #viral, #foryou. Sistem menghasilkan tag niche spesifik yang memperjelas kategorisasi klip ke audiens tertarget.
+                  Bebas dari hashtag sampah seperti #fyp atau #viral. Menghasilkan tag niche spesifik yang memperjelas kategorisasi klip ke audiens tertarget.
                 </p>
               </div>
 
@@ -583,371 +786,41 @@ export default function App() {
                 <div className="w-8 h-8 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold text-xs">
                   06
                 </div>
-                <h3 className="text-sm font-bold text-white">Seamless Loop Suggestion</h3>
+                <h3 className="text-sm font-bold text-white">Seamless Loop Strategy</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Menyediakan panduan bagaimana kalimat akhir klip dapat berkesinambungan menjawab kalimat awal sehingga penonton menonton video lebih dari satu kali.
+                  Kalimat akhir klip berkesinambungan menjawab kalimat awal sehingga penonton menonton video lebih dari satu kali secara natural.
                 </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB 3: OUTPUT INSPECTOR & SIMULASI PREVIEW */}
-        {activeTab === 'inspector' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Simulasi TikTok Phone Player */}
-            <div className="lg:col-span-4 flex flex-col items-center">
-              <div className="w-[280px] sm:w-[300px] h-[560px] bg-slate-900 rounded-[36px] border-4 border-slate-800 shadow-2xl relative overflow-hidden flex flex-col justify-between p-4">
-                {/* Background Video Mockup */}
-                <div className="absolute inset-0 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center">
-                  <div className="text-center space-y-2 p-4">
-                    <div className="w-14 h-14 rounded-full bg-pink-500/20 border border-pink-500/40 flex items-center justify-center mx-auto text-pink-400">
-                      <Play className="w-6 h-6 translate-x-0.5" />
-                    </div>
-                    <span className="text-xs font-semibold text-slate-400 block">1080x1920 (9:16 Vertikal)</span>
-                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 font-mono">
-                      Loudnorm EBU R128 Active
-                    </span>
-                  </div>
-                </div>
-
-                {/* Top Overlay */}
-                <div className="relative z-10 flex justify-between items-center text-[11px] text-white/80 font-medium">
-                  <span className="bg-black/40 backdrop-blur-sm px-2 py-0.5 rounded-md">Klip #{currentClip.index}</span>
-                  <span className="bg-pink-500/80 px-2 py-0.5 rounded-md font-bold text-white text-[10px]">⭐ {currentClip.score}/100</span>
-                </div>
-
-                {/* Subtitle Box Simulation */}
-                <div className="relative z-10 my-auto text-center px-2">
-                  <span className="inline-block bg-black/80 text-yellow-300 text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg border border-yellow-400/30">
-                    &ldquo;{currentClip.hook}&rdquo;
-                  </span>
-                </div>
-
-                {/* Bottom Overlay & Actions */}
-                <div className="relative z-10 space-y-2">
-                  <div className="flex justify-between items-end">
-                    <div className="space-y-1 max-w-[200px]">
-                      <div className="text-xs font-bold text-white flex items-center gap-1">
-                        @tiktokclipper_bot
-                        <CheckCircle className="w-3 h-3 text-cyan-400" />
-                      </div>
-                      <p className="text-[10px] text-white/90 line-clamp-2 leading-tight font-light">
-                        {currentClip.caption}
-                      </p>
-                      <div className="flex flex-wrap gap-1 text-[9px] text-cyan-300 font-mono">
-                        {currentClip.hashtags.map((h) => (
-                          <span key={h}>#{h}</span>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Right TikTok Action Icons */}
-                    <div className="flex flex-col items-center gap-3 text-white">
-                      <div className="flex flex-col items-center">
-                        <Flame className="w-5 h-5 text-pink-500" />
-                        <span className="text-[9px] font-bold">94K</span>
-                      </div>
-                      <div className="flex flex-col items-center">
-                        <Bookmark className="w-5 h-5 text-yellow-400" />
-                        <span className="text-[9px] font-bold">12K</span>
-                      </div>
-                      <div className="flex flex-col items-center">
-                        <Share2 className="w-5 h-5 text-cyan-400" />
-                        <span className="text-[9px] font-bold">4.8K</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Selector Klip */}
-              <div className="flex items-center gap-2 mt-4">
-                {sampleClips.map((c, i) => (
-                  <button
-                    key={c.index}
-                    onClick={() => setSelectedClipIdx(i)}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${
-                      selectedClipIdx === i
-                        ? 'bg-pink-500 border-pink-400 text-white shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Klip #{c.index}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* File Viewer Simulator */}
-            <div className="lg:col-span-8 space-y-4">
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-4">
-                {/* Header Selector File Output */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <button
-                      onClick={() => setInspectorFile('summary')}
-                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                        inspectorFile === 'summary'
-                          ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                      }`}
-                    >
-                      summary.md
-                    </button>
-                    <button
-                      onClick={() => setInspectorFile('clip_json')}
-                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                        inspectorFile === 'clip_json'
-                          ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                      }`}
-                    >
-                      {currentClip.slug}.json
-                    </button>
-                    <button
-                      onClick={() => setInspectorFile('srt')}
-                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                        inspectorFile === 'srt'
-                          ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                      }`}
-                    >
-                      {currentClip.slug}.srt
-                    </button>
-                    <button
-                      onClick={() => setInspectorFile('manifest')}
-                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                        inspectorFile === 'manifest'
-                          ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                      }`}
-                    >
-                      manifest.json
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      let textToCopy = '';
-                      if (inspectorFile === 'summary') textToCopy = currentClip.caption;
-                      else if (inspectorFile === 'clip_json') textToCopy = JSON.stringify(currentClip, null, 2);
-                      else if (inspectorFile === 'srt') textToCopy = `1\n00:00:00,000 --> 00:00:03,500\n${currentClip.hook}`;
-                      else textToCopy = JSON.stringify({ app_version: "1.0.0", clips_count: sampleClips.length }, null, 2);
-                      handleCopy(textToCopy);
-                    }}
-                    className="flex items-center gap-1 text-xs text-slate-400 hover:text-white bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800"
-                  >
-                    <Copy className="w-3 h-3" />
-                    Salin Konten
-                  </button>
-                </div>
-
-                {/* Konten File Terpilih */}
-                <div className="bg-slate-950 rounded-xl p-4 border border-slate-800/80 font-mono text-xs overflow-x-auto max-h-[420px] overflow-y-auto leading-relaxed">
-                  {inspectorFile === 'summary' && (
-                    <div className="space-y-4 font-sans text-slate-200">
-                      <div className="border-b border-slate-800 pb-2">
-                        <h3 className="text-sm font-bold text-pink-400">## Klip #{currentClip.index}: {currentClip.title}</h3>
-                        <p className="text-xs text-slate-400">Durasi: {currentClip.duration}s ({currentClip.start} - {currentClip.end}) | Skor: {currentClip.score}/100</p>
-                      </div>
-
-                      <div>
-                        <span className="text-xs font-semibold text-yellow-400 uppercase tracking-wider block mb-1">🎯 Hook 3 Detik:</span>
-                        <blockquote className="border-l-2 border-yellow-400 pl-3 italic text-slate-300 bg-yellow-950/20 py-1.5 rounded-r-lg">
-                          &ldquo;{currentClip.hook}&rdquo;
-                        </blockquote>
-                      </div>
-
-                      <div>
-                        <span className="text-xs font-semibold text-cyan-400 uppercase tracking-wider block mb-1">📝 Caption SEO TikTok:</span>
-                        <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 text-xs text-slate-200 select-all">
-                          {currentClip.caption}
-                        </div>
-                      </div>
-
-                      <div>
-                        <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider block mb-1">🏷️ Rekomendasi Hashtags:</span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {currentClip.hashtags.map(t => (
-                            <span key={t} className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 text-xs">
-                              #{t}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider block mb-1">🔄 Saran Seamless Loop:</span>
-                        <p className="text-xs text-slate-300 bg-purple-950/20 p-2.5 rounded-lg border border-purple-900/30">
-                          {currentClip.loop}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {inspectorFile === 'clip_json' && (
-                    <pre className="text-pink-300">
-                      {JSON.stringify(currentClip, null, 2)}
-                    </pre>
-                  )}
-
-                  {inspectorFile === 'srt' && (
-                    <pre className="text-emerald-300 space-y-2">
-{`1
-00:00:00,000 --> 00:00:03,420
-${currentClip.hook}
-
-2
-00:00:03,420 --> 00:00:08,150
-Pisahin rekening pribadi sama rekening operasional sejak hari pertama.
-
-3
-00:00:08,150 --> 00:00:15,000
-Bagi jadi 3 pos: pos modal putar, pos darurat usaha, dan pos gaji founder.
-
-4
-00:00:15,000 --> 00:00:${Math.round(currentClip.duration)},000
-Simpan video ini biar bisnis kamu nggak boncos di awal.`}
-                    </pre>
-                  )}
-
-                  {inspectorFile === 'manifest' && (
-                    <pre className="text-cyan-300">
-{JSON.stringify({
-  "app_version": "1.0.0",
-  "created_at": new Date().toISOString(),
-  "source_type": "file",
-  "source_input": "podcast_bisnis_eps12.mp4",
-  "source_duration": 940.5,
-  "source_resolution": "1920x1080",
-  "niche": "bisnis",
-  "total_segments": 142,
-  "target_clips_count": 3,
-  "successful_clips_count": 3,
-  "settings": {
-    "min_duration": 15,
-    "max_duration": 60,
-    "vertical": "auto",
-    "subtitles": true
-  }
-}, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: .ENV CONFIGURATOR */}
-        {activeTab === 'env' && (
-          <div className="max-w-4xl mx-auto space-y-6">
-            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-6 shadow-xl space-y-4">
+        {/* TAB 4: CLI TERMINAL */}
+        {activeTab === "cli" && (
+          <div className="space-y-6">
+            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                 <div className="flex items-center gap-2">
-                  <SettingsIcon className="w-5 h-5 text-pink-400" />
-                  <div>
-                    <h2 className="text-base font-bold text-white">Konfigurasi .env</h2>
-                    <p className="text-xs text-slate-400">File pengaturan lingkungan aplikasi TikTok Clipper</p>
-                  </div>
+                  <Terminal className="w-4 h-4 text-emerald-400" />
+                  <h3 className="text-sm font-bold text-white">CLI Command Generator</h3>
                 </div>
                 <button
-                  onClick={() => handleCopy(`GROQ_API_KEY=\nGROQ_BASE_URL=https://api.groq.com/openai/v1\nGROQ_WHISPER_MODEL=whisper-large-v3\nGROQ_LLM_MODEL=openai/gpt-oss-120b\nFFMPEG_PATH=ffmpeg\nFFPROBE_PATH=ffprobe\nOUTPUT_DIR=output\nCACHE_DIR=cache\nLOG_DIR=logs\nDEFAULT_MIN_DURATION=15\nDEFAULT_MAX_DURATION=60\nDEFAULT_NUM_CLIPS=3\nDEFAULT_NICHE=umum`)}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-pink-500/20 text-pink-300 hover:bg-pink-500/30 border border-pink-500/30"
+                  onClick={() => handleCopy(generateCLICommand())}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-pink-500/20 text-pink-300 hover:bg-pink-500/30 border border-pink-500/30"
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                  Salin .env.example
+                  {copiedCmd ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedCmd ? "Tersalin!" : "Salin Perintah"}
                 </button>
               </div>
 
-              <div className="space-y-4 text-xs">
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-slate-300 space-y-2">
-                  <div><span className="text-pink-400 font-bold">GROQ_API_KEY</span>=<span className="text-yellow-400">&quot;gsk_...&quot;</span> <span className="text-slate-500"># Wajib: Dapatkan gratis di console.groq.com</span></div>
-                  <div><span className="text-pink-400 font-bold">GROQ_BASE_URL</span>=https://api.groq.com/openai/v1</div>
-                  <div><span className="text-pink-400 font-bold">GROQ_WHISPER_MODEL</span>=whisper-large-v3 <span className="text-slate-500"># Model transkripsi suara</span></div>
-                  <div><span className="text-pink-400 font-bold">GROQ_LLM_MODEL</span>=openai/gpt-oss-120b <span className="text-slate-500"># Model AI seleksi klip</span></div>
-                  <div><span className="text-cyan-400 font-bold">FFMPEG_PATH</span>=ffmpeg <span className="text-slate-500"># Path executable ffmpeg</span></div>
-                  <div><span className="text-cyan-400 font-bold">FFPROBE_PATH</span>=ffprobe <span className="text-slate-500"># Path executable ffprobe</span></div>
-                  <div><span className="text-emerald-400 font-bold">OUTPUT_DIR</span>=output <span className="text-slate-500"># Folder hasil klip</span></div>
-                  <div><span className="text-emerald-400 font-bold">CACHE_DIR</span>=cache <span className="text-slate-500"># Folder cache transkrip & analisis</span></div>
-                  <div><span className="text-emerald-400 font-bold">LOG_DIR</span>=logs <span className="text-slate-500"># Folder log app.log</span></div>
-                  <div><span className="text-slate-400 font-bold">DEFAULT_MIN_DURATION</span>=15</div>
-                  <div><span className="text-slate-400 font-bold">DEFAULT_MAX_DURATION</span>=60</div>
-                  <div><span className="text-slate-400 font-bold">DEFAULT_NUM_CLIPS</span>=3</div>
-                  <div><span className="text-slate-400 font-bold">DEFAULT_NICHE</span>=umum</div>
-                </div>
-
-                <div className="bg-pink-950/20 border border-pink-900/30 p-3.5 rounded-xl text-slate-300 space-y-1">
-                  <div className="font-semibold text-pink-400 flex items-center gap-1.5">
-                    <AlertCircle className="w-4 h-4" />
-                    Keamanan API Key & Kuota Gratis Groq:
-                  </div>
-                  <p className="text-[11px] text-slate-400">
-                    Aplikasi otomatis menerapkan jeda 2 detik antar panggilan API dan mekanisme exponential backoff (2s, 4s, 8s) untuk memastikan akun free-tier Groq tidak terkena batas rate-limit.
-                  </p>
-                </div>
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-xs text-pink-300 break-all leading-relaxed shadow-inner">
+                {generateCLICommand()}
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* TAB 5: PANDUAN LENGKAP */}
-        {activeTab === 'guide' && (
-          <div className="max-w-4xl mx-auto space-y-6">
-            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-6 shadow-xl space-y-5">
-              <h2 className="text-base font-bold text-white border-b border-slate-800 pb-3">
-                Panduan Menjalankan TikTok Clipper di Komputer Anda
-              </h2>
-
-              <div className="space-y-4 text-xs text-slate-300">
-                <div className="flex gap-3">
-                  <div className="w-6 h-6 rounded-full bg-pink-500/20 text-pink-400 font-bold flex items-center justify-center shrink-0 border border-pink-500/30">1</div>
-                  <div>
-                    <h3 className="font-bold text-white text-sm">Persiapan Lingkungan (Untuk Pengguna Windows)</h3>
-                    <p className="text-slate-400 mt-1">Cukup jalankan file batch otomatis:</p>
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-pink-300 mt-1.5 inline-block">
-                      setup_windows.bat
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <div className="w-6 h-6 rounded-full bg-pink-500/20 text-pink-400 font-bold flex items-center justify-center shrink-0 border border-pink-500/30">2</div>
-                  <div>
-                    <h3 className="font-bold text-white text-sm">Instalasi Manual (Linux / macOS / Windows)</h3>
-                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-slate-300 mt-1.5 space-y-1">
-                      <div>python -m venv venv</div>
-                      <div>source venv/bin/activate  <span className="text-slate-500"># atau venv\Scripts\activate di Windows</span></div>
-                      <div>pip install -r requirements.txt</div>
-                      <div>cp .env.example .env</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <div className="w-6 h-6 rounded-full bg-pink-500/20 text-pink-400 font-bold flex items-center justify-center shrink-0 border border-pink-500/30">3</div>
-                  <div>
-                    <h3 className="font-bold text-white text-sm">Diagnosis Kesiapan</h3>
-                    <p className="text-slate-400 mt-1">Jalankan perintah berikut untuk memastikan Python, FFmpeg, dan Groq API Key terkonfigurasi:</p>
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-emerald-300 mt-1.5 inline-block">
-                      python main.py --check
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <div className="w-6 h-6 rounded-full bg-pink-500/20 text-pink-400 font-bold flex items-center justify-center shrink-0 border border-pink-500/30">4</div>
-                  <div>
-                    <h3 className="font-bold text-white text-sm">Mulai Memotong Video</h3>
-                    <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-slate-300 mt-1.5 space-y-1">
-                      <div className="text-pink-400"># Dari file lokal:</div>
-                      <div>python main.py --input &quot;podcast.mp4&quot; --niche edukasi --num-clips 3</div>
-                      <div className="text-cyan-400 pt-2"># Dari link YouTube:</div>
-                      <div>python main.py --url &quot;https://youtu.be/xxxx&quot; --niche bisnis</div>
-                    </div>
-                  </div>
-                </div>
+              <div className="text-xs text-slate-400 space-y-1">
+                <p>
+                  💡 <strong>Cara Eksekusi CLI:</strong> Anda dapat menjalankan perintah di atas langsung di terminal sistem dengan Python 3.11+.
+                </p>
               </div>
             </div>
           </div>
@@ -955,11 +828,8 @@ Simpan video ini biar bisnis kamu nggak boncos di awal.`}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-950 py-4 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-wrap items-center justify-between gap-2">
-          <span>TikTok Clipper © 2026 • AI Short-Form Video Automation</span>
-          <span className="font-mono text-[11px] text-slate-400">FFmpeg • Groq Whisper • Groq LLM • Typer</span>
-        </div>
+      <footer className="border-t border-slate-800 bg-slate-900/50 py-4 text-center text-xs text-slate-500">
+        TikTok Clipper v2.0 &bull; Algoritma TikTok 2026 &bull; Active Speaker Tracking with OpenCV & FFmpeg
       </footer>
     </div>
   );
