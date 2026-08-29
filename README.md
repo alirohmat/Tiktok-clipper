@@ -99,6 +99,55 @@ DEFAULT_NICHE=umum
 
 ---
 
+## 🐳 Deployment Berbasis Web Menggunakan Docker
+
+Aplikasi ini telah dilengkapi dengan antarmuka Web Studio Generator serta konfigurasi **Docker & Docker Compose** multi-stage siap pakai untuk deployment di VPS, Cloud VM, atau server lokal.
+
+### 1. Menjalankan dengan Docker Compose (Paling Praktis)
+```bash
+# 1. Pastikan file .env sudah berisi GROQ_API_KEY Anda
+cp .env.example .env
+
+# 2. Build dan jalankan container di latar belakang
+docker compose up -d --build
+
+# 3. Buka Web Studio di browser Anda:
+# http://localhost:3000
+```
+
+Untuk melihat log pemrosesan secara langsung:
+```bash
+docker compose logs -f
+```
+
+Untuk menghentikan container:
+```bash
+docker compose down
+```
+
+---
+
+### 2. Menjalankan Langsung dengan Docker CLI
+```bash
+# Build image Docker
+docker build -t tiktok-clipper-web .
+
+# Jalankan container dengan volume persistence dan environment key
+docker run -d \
+  --name tiktok-clipper-app \
+  -p 3000:3000 \
+  -e GROQ_API_KEY="gsk_xxxxxxxxxxxxxxxxxxxx" \
+  -v "$(pwd)/output:/app/output" \
+  -v "$(pwd)/cache:/app/cache" \
+  -v "$(pwd)/logs:/app/logs" \
+  --restart unless-stopped \
+  tiktok-clipper-web
+```
+
+Akses aplikasi web di `http://localhost:3000`.
+
+---
+
 ## 🔍 Pemeriksaan Sistem (--check)
 Sebelum memproses video, jalankan diagnosa untuk memastikan semua dependensi siap:
 

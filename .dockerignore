@@ -1,0 +1,45 @@
+# Node.js
+node_modules
+npm-debug.log
+yarn-error.log
+.pnpm-debug.log
+
+# Build Outputs
+dist
+dist-ssr
+*.local
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Data & Persistence (Mounting via volume)
+output/*
+!output/.gitkeep
+cache/*
+!cache/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Git & Editor
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
