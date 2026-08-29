@@ -1,0 +1,96 @@
+# ==============================================================================
+# 🚀 Dockerfile.vercel untuk TikTok Clipper Web Studio (AI Video Generator)
+# ==============================================================================
+# Dirancang khusus untuk kompatibilitas containerized hosting / Vercel Serverless / Cloud Run
+# Menggabungkan Node.js 20 LTS, Python 3.11, FFmpeg lengkap, pustaka OpenCV, dan Fast Build.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Tahap 1: Builder (Kompilasi Frontend Vite & Backend Server Bundle)
+# ------------------------------------------------------------------------------
+FROM node:20-bookworm-slim AS builder
+
+WORKDIR /app
+
+# Atur variabel lingkungan build
+ENV NODE_ENV=production
+
+# Salin konfigurasi dependensi Node.js
+COPY package.json package-lock.json* bun.lock* ./
+COPY tsconfig.json vite.config.ts ./
+
+# Pasang seluruh dependensi untuk build frontend & bundling server
+RUN npm install
+
+# Salin source code frontend dan backend
+COPY index.html ./
+COPY src/ ./src/
+COPY server.ts ./
+
+# Kompilasi frontend ke folder dist/ dan server ke dist/server.cjs
+RUN npm run build
+
+
+# ------------------------------------------------------------------------------
+# Tahap 2: Vercel / Production Container Runtime
+# ------------------------------------------------------------------------------
+FROM node:20-bookworm-slim AS runner
+
+WORKDIR /app
+
+# Atur environment variable untuk Vercel / Containerized Runtime
+ENV NODE_ENV=production \
+    PORT=3000 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    FFMPEG_PATH=ffmpeg \
+    FFPROBE_PATH=ffprobe \
+    OUTPUT_DIR=/app/output \
+    CACHE_DIR=/app/cache \
+    LOG_DIR=/app/logs \
+    TMPDIR=/tmp
+
+# Pasang paket sistem yang diperlukan:
+# - ffmpeg & ffprobe: untuk pemotongan video, aspect ratio 9:16, loudnorm audio, dan burning subtitle
+# - python3 & pip: untuk menjalankan pipeline AI transkripsi, chunking, dan clip analyzer
+# - libgl1 & libglib2.0-0: dependensi C untuk deteksi wajah OpenCV (speaker tracking)
+# - curl & ca-certificates: untuk healthcheck dan unduhan video HTTPS
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    python3-venv \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Salin dependensi Python & pasang pustaka AI
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+
+# Salin dependensi Node.js produksi & hasil build dari Tahap 1
+COPY package.json ./
+RUN npm install --omit=dev --ignore-scripts
+
+# Salin artifak hasil kompilasi
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/src ./src
+COPY --from=builder /app/index.html ./index.html
+COPY main.py metadata.json ./
+COPY assets ./assets
+
+# Siapkan direktori kerja dengan izin akses penuh (read/write)
+RUN mkdir -p /app/output /app/cache/uploads /app/logs /tmp && \
+    chmod -R 777 /app/output /app/cache /app/logs /tmp
+
+# Buka Port 3000 (Port standar Vercel & Container)
+EXPOSE 3000
+
+# Healthcheck endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3000/api/system-status || exit 1
+
+# Entry point start server
+CMD ["node", "dist/server.cjs"]

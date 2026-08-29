@@ -60,8 +60,8 @@ export default function App() {
   // Form State
   const [sourceType, setSourceType] = useState<SourceInputType>("direct");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [directUrl, setDirectUrl] = useState("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4");
-  const [urlVal, setUrlVal] = useState("https://www.youtube.com/watch?v=sample-podcast");
+  const [directUrl, setDirectUrl] = useState("");
+  const [urlVal, setUrlVal] = useState("");
   const [niche, setNiche] = useState<ContentNiche>("auto");
   const [numClips, setNumClips] = useState(2);
   const [minDur, setMinDur] = useState(15);
@@ -485,79 +485,18 @@ export default function App() {
 
                   {/* Input Source Body */}
                   {sourceType === "direct" && (
-                    <div className="mt-2 space-y-3">
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                            <Radio className="w-3.5 h-3.5 text-emerald-400" />
-                            URL Direct File Video Podcast (.mp4 / stream / CDN)
-                          </label>
-                          <span className="text-[11px] text-emerald-400 font-mono">Bypass Bot Verification</span>
-                        </div>
-                        <input
-                          type="text"
-                          value={directUrl}
-                          onChange={(e) => setDirectUrl(e.target.value)}
-                          placeholder="https://domain.com/podcast-video.mp4 atau link direct storage"
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
-                        />
-                      </div>
-
-                      {/* Presets Direct Podcast Videos */}
-                      <div className="space-y-1.5">
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                          Pilihan Cepat: Contoh Link Direct Video Podcast
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          {[
-                            {
-                              title: "Podcast Bisnis & Strategi",
-                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-                              desc: "Direct MP4 • 1080p",
-                              nicheTarget: "bisnis" as ContentNiche,
-                            },
-                            {
-                              title: "Podcast Teknologi & AI",
-                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                              desc: "Direct MP4 • Fast CDN",
-                              nicheTarget: "teknologi" as ContentNiche,
-                            },
-                            {
-                              title: "Podcast Edukasi & Sains",
-                              url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-                              desc: "Direct MP4 • Naratif",
-                              nicheTarget: "edukasi" as ContentNiche,
-                            },
-                          ].map((item, idx) => (
-                            <button
-                              key={idx}
-                              type="button"
-                              onClick={() => {
-                                setDirectUrl(item.url);
-                                setNiche(item.nicheTarget);
-                              }}
-                              className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                                directUrl === item.url
-                                  ? "bg-emerald-500/20 border-emerald-500 text-emerald-200"
-                                  : "bg-slate-950/80 border-slate-800/80 text-slate-300 hover:border-slate-700"
-                              }`}
-                            >
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-semibold text-xs text-white">{item.title}</span>
-                                {directUrl === item.url && (
-                                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono">{item.desc}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
+                    <div className="mt-2 space-y-2">
+                      <input
+                        type="text"
+                        value={directUrl}
+                        onChange={(e) => setDirectUrl(e.target.value)}
+                        placeholder="https://domain.com/podcast-video.mp4 atau tautan direct storage..."
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
+                      />
                       <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2.5 text-[11px] text-emerald-300 flex items-start gap-2">
                         <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                         <div>
-                          <span className="font-semibold text-emerald-200">Keunggulan Link Direct:</span> Video diunduh dengan stream HTTP/HTTPS kecepatan tinggi tanpa memerlukan cookies, tidak terkena blokir bot YouTube, dan mendukung link Google Drive / Dropbox yang diubah otomatis menjadi direct download.
+                          <span className="font-semibold text-emerald-200">Tips Tautan Direct:</span> Mendukung link video langsung (.mp4 / .webm / CDN) serta tautan Google Drive / Dropbox yang otomatis diunduh cepat tanpa batasan bot YouTube.
                         </div>
                       </div>
                     </div>
