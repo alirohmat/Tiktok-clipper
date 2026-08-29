@@ -488,7 +488,7 @@ export default function App() {
                   )}
 
                   {sourceType === "url" && (
-                    <div className="mt-2">
+                    <div className="mt-2 space-y-2">
                       <input
                         type="text"
                         value={urlVal}
@@ -496,9 +496,15 @@ export default function App() {
                         placeholder="https://www.youtube.com/watch?v=..."
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
                       />
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        Sistem akan mengunduh video dengan format kualitas optimal (1080p).
-                      </p>
+                      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5 text-[11px] text-amber-300">
+                        <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold text-amber-200">Tips Tautan YouTube:</p>
+                          <p className="text-amber-300/90 leading-relaxed">
+                            Jika YouTube memblokir unduhan server dengan pesan <em>"Sign in to confirm you're not a bot"</em>, gunakan tab <strong>"Unggah File Lokal"</strong> untuk memproses file MP4 secara langsung tanpa batasan bot YouTube.
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   )}
 
