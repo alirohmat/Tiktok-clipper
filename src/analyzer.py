@@ -30,23 +30,101 @@ from src.prompts import (
 from src.utils import calculate_file_hash, get_cache, logger, sanitize_filename, save_cache
 
 
+def parse_llm_json_robust(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parser JSON tangguh untuk berbagai LLM (Meta Muse Spark, Llama, DeepSeek, OpenAI, Groq, Ollama).
+    Membersihkan markdown block, reasoning tags (<think>...</think>), trailing commas, dan konversi list/dict.
+    """
+    if not text or not text.strip():
+        return None
+
+    cleaned = text.strip()
+
+    # 1. Hapus tag reasoning seperti <think>...</think> atau <thought>...</thought>
+    cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'<thought>.*?</thought>', '', cleaned, flags=re.DOTALL)
+
+    # 2. Hapus markdown code blocks ```json ... ``` atau ``` ... ```
+    if "```" in cleaned:
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+        else:
+            cleaned = re.sub(r'```(?:json)?', '', cleaned)
+            cleaned = cleaned.replace('```', '').strip()
+
+    # 3. Cari blok JSON terluar (antara { ... } atau [ ... ])
+    first_brace = cleaned.find('{')
+    last_brace = cleaned.rfind('}')
+    first_bracket = cleaned.find('[')
+    last_bracket = cleaned.rfind(']')
+
+    # Tentukan apakah format objek {} atau array [] yang lebih dominan/awal
+    target_json_str = cleaned
+    if first_brace != -1 and last_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        target_json_str = cleaned[first_brace:last_brace + 1]
+    elif first_bracket != -1 and last_bracket != -1:
+        target_json_str = cleaned[first_bracket:last_bracket + 1]
+
+    # 4. Pembersihan umum sintaks JSON (misal koma gantung di akhir objek/array)
+    target_json_str = re.sub(r',\s*([\]}])', r'\1', target_json_str)
+
+    # 5. Coba parse dengan json.loads standard
+    try:
+        data = json.loads(target_json_str)
+        if isinstance(data, list):
+            return {"clips": data}
+        if isinstance(data, dict):
+            if "clips" in data:
+                return data
+            # Cek field sinonim yang sering dikeluarkan model open source
+            for alt_key in ["candidates", "data", "items", "results", "clip_candidates", "segments"]:
+                if alt_key in data and isinstance(data[alt_key], list):
+                    data["clips"] = data[alt_key]
+                    return data
+            # Jika objek adalah satu kandidat tunggal
+            if "title" in data or "start_segment_id" in data or "start" in data:
+                return {"clips": [data]}
+            return data
+    except Exception as e:
+        logger.debug(f"Percobaan parsing json.loads pertama gagal ({e}): {target_json_str[:120]}...")
+
+    # 6. Fallback kedua: bersihkan karakter kontrol tak terlihat
+    try:
+        sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', target_json_str)
+        data = json.loads(sanitized)
+        if isinstance(data, list):
+            return {"clips": data}
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return None
+
+
 def _call_universal_llm(
     system_prompt: str,
     user_prompt: str,
     override_model: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Memanggil LLM (OpenAI, DeepSeek, OpenRouter, Groq, atau OpenAI-compatible endpoint lainnya).
-    Menggunakan retry cerdas, Groq model auto-tiering, dan fallback yang tangguh.
+    Memanggil LLM (Meta Muse Spark, OpenAI, DeepSeek, OpenRouter, Groq, Ollama, atau endpoint kustom lainnya).
+    Mendukung auto-fallback Docker host networking, toleransi tanpa API key untuk endpoint lokal,
+    dan penanganan cerdas parameter model.
     """
     provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
     if override_model:
         model = override_model
 
-    if not api_key:
-        return None, "API Key LLM belum dikonfigurasi. Silakan masukkan OpenAI API Key atau Groq API Key."
+    # Jika menggunakan endpoint kustom (misal Muse Spark / Ollama / local LLM), sediakan dummy API key jika kosong
+    if base_url and not api_key:
+        api_key = "EMPTY"
 
-    logger.info(f"Mengirim analisis ke LLM [Provider: {provider} | Model: {model}]...")
+    if not api_key:
+        return None, "API Key LLM belum dikonfigurasi. Silakan masukkan LLM_API_KEY atau GROQ_API_KEY di .env."
+
+    logger.info(f"Mengirim analisis ke LLM [Provider: {provider} | Base URL: {base_url or 'Default'} | Model: {model}]...")
 
     # Strategi 1: Jika provider adalah groq dan tidak ada custom base_url, gunakan Groq SDK
     if provider == "groq" and not base_url:
@@ -55,7 +133,6 @@ def _call_universal_llm(
             client = Groq(api_key=api_key)
             models_to_try = [model]
             if model != "llama-3.1-8b-instant":
-                # Tambahkan 8b-instant sebagai fallback jika 70b terkena rate limit
                 models_to_try.append("llama-3.1-8b-instant")
 
             for cur_model in models_to_try:
@@ -71,7 +148,7 @@ def _call_universal_llm(
                             response_format={"type": "json_object"}
                         )
                         content = chat_completion.choices[0].message.content
-                        time.sleep(1.0)
+                        time.sleep(0.5)
                         return content, None
                     except RateLimitError as rle:
                         wait_s = (attempt + 1) * 4
@@ -87,102 +164,124 @@ def _call_universal_llm(
         except ImportError:
             pass
         except Exception as ex:
-            logger.warning(f"Groq SDK call error: {ex}, beralih ke HTTP fallback...")
+            logger.warning(f"Groq SDK call error: {ex}, beralih ke OpenAI / REST fallback...")
 
-    # Tentukan base_url & endpoint yang tepat sesuai provider jika belum disetel
-    if not base_url:
-        if provider == "groq":
-            effective_base_url = "https://api.groq.com/openai/v1"
-        elif provider == "deepseek":
-            effective_base_url = "https://api.deepseek.com/v1"
-        elif provider == "openrouter":
-            effective_base_url = "https://openrouter.ai/api/v1"
-        else:
-            effective_base_url = "https://api.openai.com/v1"
+    # Tentukan daftar URL kandidat (termasuk penanganan khusus Docker host.docker.internal)
+    candidate_urls = []
+    if base_url:
+        clean_base = base_url.rstrip("/")
+        candidate_urls.append(clean_base)
+        # Jika berjalan di container Docker dan user memasukkan localhost atau 127.0.0.1,
+        # tambahkan host.docker.internal agar container bisa mengakses server di OS host pengguna
+        if "localhost" in clean_base:
+            candidate_urls.append(clean_base.replace("localhost", "host.docker.internal"))
+        elif "127.0.0.1" in clean_base:
+            candidate_urls.append(clean_base.replace("127.0.0.1", "host.docker.internal"))
     else:
-        effective_base_url = base_url.rstrip("/")
+        if provider == "deepseek":
+            candidate_urls.append("https://api.deepseek.com/v1")
+        elif provider == "openrouter":
+            candidate_urls.append("https://openrouter.ai/api/v1")
+        elif provider == "groq":
+            candidate_urls.append("https://api.groq.com/openai/v1")
+        else:
+            candidate_urls.append("https://api.openai.com/v1")
 
-    # Strategi 2: Jika OpenAI SDK terpasang, gunakan OpenAI client dengan endpoint yang sesuai
+    # Strategi 2: Coba OpenAI SDK jika terpasang
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=effective_base_url)
-
-        for attempt in range(3):
+        for cur_base in candidate_urls:
             try:
-                try:
-                    chat_completion = client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.2,
-                        response_format={"type": "json_object"}
-                    )
-                except Exception:
-                    chat_completion = client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.2
-                    )
-                content = chat_completion.choices[0].message.content
-                return content, None
-            except Exception as e:
-                err_str = str(e)
-                if "rate" in err_str.lower() or "429" in err_str:
-                    time.sleep((attempt + 1) * 3)
-                    continue
-                if attempt == 2:
-                    break
-                time.sleep(2)
+                client = OpenAI(api_key=api_key, base_url=cur_base, timeout=90.0)
+                for attempt in range(2):
+                    try:
+                        # Coba dengan json_object jika didukung
+                        chat_completion = client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.2,
+                            response_format={"type": "json_object"}
+                        )
+                        content = chat_completion.choices[0].message.content
+                        return content, None
+                    except Exception as first_err:
+                        # Beberapa endpoint lokal (Muse Spark / Ollama / vLLM) menolak response_format parameter
+                        first_err_str = str(first_err)
+                        logger.debug(f"OpenAI SDK call dengan response_format gagal ({first_err_str}), mencoba mode teks biasa...")
+                        try:
+                            chat_completion = client.chat.completions.create(
+                                model=model,
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_prompt}
+                                ],
+                                temperature=0.2
+                            )
+                            content = chat_completion.choices[0].message.content
+                            return content, None
+                        except Exception as e2:
+                            err_str = str(e2)
+                            if "429" in err_str or "rate" in err_str.lower():
+                                time.sleep(3)
+                                continue
+                            raise e2
+            except Exception as client_err:
+                logger.warning(f"Percobaan OpenAI SDK ke {cur_base} ({model}) gagal: {client_err}")
+                continue
     except ImportError:
         pass
-    except Exception as ex:
-        logger.warning(f"OpenAI SDK error: {ex}, mencoba HTTP request langsung...")
 
-    # Strategi 3: Universal HTTP REST call ke standard /chat/completions
-    endpoint = f"{effective_base_url}/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.2
-    }
+    # Strategi 3: Universal HTTP REST call langsung
+    last_http_error = None
+    for cur_base in candidate_urls:
+        # Cek apakah URL sudah mengandung /chat/completions
+        if cur_base.endswith("/chat/completions"):
+            endpoint = cur_base
+        else:
+            endpoint = f"{cur_base}/chat/completions"
 
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(
-                endpoint,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                content = data["choices"][0]["message"]["content"]
-                return content, None
-        except urllib.error.HTTPError as he:
-            err_body = he.read().decode("utf-8", errors="ignore")
-            logger.error(f"LLM HTTP Error {he.code}: {err_body[:200]}")
-            if he.code == 429:
-                time.sleep((attempt + 1) * 4)
-                continue
-            return None, f"LLM API Error ({he.code}): {err_body[:200]}"
-        except Exception as ex:
-            if attempt == 2:
-                return None, f"Gagal memanggil LLM Endpoint: {str(ex)}"
-            time.sleep(2)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.2
+        }
 
-    return None, "Gagal mendapatkan respons LLM setelah beberapa kali mencoba."
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    endpoint,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    content = resp_data["choices"][0]["message"]["content"]
+                    return content, None
+            except urllib.error.HTTPError as he:
+                err_body = he.read().decode("utf-8", errors="ignore")
+                last_http_error = f"HTTP {he.code}: {err_body[:250]}"
+                logger.error(f"LLM HTTP Error ke {endpoint} ({he.code}): {err_body[:250]}")
+                if he.code == 429:
+                    time.sleep(4)
+                    continue
+                break
+            except Exception as ex:
+                last_http_error = str(ex)
+                logger.warning(f"Koneksi HTTP ke {endpoint} gagal: {ex}")
+                time.sleep(2)
+
+    return None, f"Gagal mendapatkan respons LLM ({model} di {candidate_urls[0]}): {last_http_error or 'Koneksi gagal/timeout'}"
 
 
 def detect_podcast_context(
@@ -249,34 +348,32 @@ def detect_podcast_context(
         )
         return ctx
 
-    clean_text = resp_text.strip()
-    if clean_text.startswith("```json"):
-        clean_text = clean_text[7:]
-    if clean_text.startswith("```"):
-        clean_text = clean_text[3:]
-    if clean_text.endswith("```"):
-        clean_text = clean_text[:-3]
-    clean_text = clean_text.strip()
+    parsed_dict = parse_llm_json_robust(resp_text)
+    if parsed_dict:
+        try:
+            # Gabungkan entity tambahan yang terpindai jika belum ada di list LLM
+            key_ents = parsed_dict.get("key_entities", [])
+            if isinstance(key_ents, str):
+                key_ents = [k.strip() for k in key_ents.split(",") if k.strip()]
+            elif not isinstance(key_ents, list):
+                key_ents = []
 
-    try:
-        data = json.loads(clean_text)
-        # Gabungkan entity tambahan yang terpindai jika belum ada di list LLM
-        key_ents = data.get("key_entities", [])
-        for nd in detected_name_drops:
-            if nd not in key_ents and len(key_ents) < 8:
-                key_ents.append(nd)
-        data["key_entities"] = key_ents
+            for nd in detected_name_drops:
+                if nd not in key_ents and len(key_ents) < 8:
+                    key_ents.append(nd)
+            parsed_dict["key_entities"] = key_ents
 
-        ctx = PodcastContext(**data)
-        save_cache("podcast_context", ctx_hash, ctx.model_dump())
-        logger.info(
-            f"👤 Konteks Terdeteksi: Host='{ctx.host}' | Tamu='{ctx.guest}' ({ctx.guest_role}) | "
-            f"Topik='{ctx.main_topic}' | Entitas={ctx.key_entities}"
-        )
-        return ctx
-    except Exception as ex:
-        logger.warning(f"Gagal mem-parsing konteks podcast ({ex}): {clean_text[:150]}")
-        return None
+            ctx = PodcastContext(**parsed_dict)
+            save_cache("podcast_context", ctx_hash, ctx.model_dump())
+            logger.info(
+                f"👤 Konteks Terdeteksi: Host='{ctx.host}' | Tamu='{ctx.guest}' ({ctx.guest_role}) | "
+                f"Topik='{ctx.main_topic}' | Entitas={ctx.key_entities}"
+            )
+            return ctx
+        except Exception as ex:
+            logger.warning(f"Gagal mengonstruksi PodcastContext ({ex}): {parsed_dict}")
+
+    return None
 
 
 def chunk_segments(
@@ -424,47 +521,38 @@ def analyze_chunk_with_llm(
     if error or not response_text:
         return [], error
 
-    # Bersihkan markdown formatting jika LLM membungkus dengan ```json
-    clean_text = response_text.strip()
-    if clean_text.startswith("```json"):
-        clean_text = clean_text[7:]
-    if clean_text.startswith("```"):
-        clean_text = clean_text[3:]
-    if clean_text.endswith("```"):
-        clean_text = clean_text[:-3]
-    clean_text = clean_text.strip()
+    # Parsing JSON tangguh
+    parsed_data = parse_llm_json_robust(response_text)
+    if parsed_data:
+        try:
+            result = ClipAnalysisResult(**parsed_data)
+            if result.clips:
+                return result.clips, None
+        except Exception as parse_err:
+            logger.warning(f"Validasi Pydantic ClipAnalysisResult pertama: {parse_err}")
 
-    # Parsing JSON
-    try:
-        data = json.loads(clean_text)
-        result = ClipAnalysisResult(**data)
-        return result.clips, None
-    except Exception as parse_err:
-        logger.warning(f"JSON pertama tidak valid ({parse_err}). Mencoba repair 1x...")
-        # Percobaan perbaikan (Retry 1x dengan prompt repair)
-        repair_prompt = build_json_repair_prompt(clean_text, str(parse_err))
-        fixed_text, repair_err = _call_universal_llm(
-            system_prompt=TIKTOK_SYSTEM_PROMPT,
-            user_prompt=repair_prompt
-        )
-        if fixed_text:
+    # Percobaan perbaikan (Retry 1x dengan prompt repair) jika parsing awal belum menghasilkan clips
+    logger.warning("JSON pertama dari LLM belum valid. Mencoba repair 1x...")
+    repair_prompt = build_json_repair_prompt(
+        response_text[:2500],
+        "Pastikan mengembalikan JSON valid berformat: {\"clips\": [{\"start_segment_id\": int, \"end_segment_id\": int, \"score\": int, \"title\": string, \"hook\": string, \"caption\": string, \"hashtags\": [string], \"cta\": string, \"reason\": string, \"loop_suggestion\": string}]}"
+    )
+    fixed_text, repair_err = _call_universal_llm(
+        system_prompt=TIKTOK_SYSTEM_PROMPT,
+        user_prompt=repair_prompt
+    )
+    if fixed_text:
+        parsed_fixed = parse_llm_json_robust(fixed_text)
+        if parsed_fixed:
             try:
-                fixed_clean = fixed_text.strip()
-                if fixed_clean.startswith("```json"):
-                    fixed_clean = fixed_clean[7:]
-                if fixed_clean.startswith("```"):
-                    fixed_clean = fixed_clean[3:]
-                if fixed_clean.endswith("```"):
-                    fixed_clean = fixed_clean[:-3]
-                fixed_clean = fixed_clean.strip()
-                data_fixed = json.loads(fixed_clean)
-                result_fixed = ClipAnalysisResult(**data_fixed)
-                logger.info("JSON berhasil diperbaiki!")
-                return result_fixed.clips, None
+                result_fixed = ClipAnalysisResult(**parsed_fixed)
+                if result_fixed.clips:
+                    logger.info("JSON berhasil diperbaiki!")
+                    return result_fixed.clips, None
             except Exception as e2:
                 logger.error(f"Repair JSON tetap gagal: {e2}")
 
-        return [], f"Output LLM bukan format JSON yang valid: {str(parse_err)}"
+    return [], "Output LLM bukan format JSON klip yang valid."
 
 
 
@@ -715,8 +803,8 @@ def analyze_transcript(
 
     provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
 
-    if not api_key:
-        logger.warning("API Key LLM tidak ditemukan, menggunakan analisis berbasis segmen audio & formula hook 2026...")
+    if not api_key and not base_url:
+        logger.warning("API Key & Base URL LLM tidak ditemukan, menggunakan analisis berbasis segmen audio & formula hook 2026...")
         if progress_callback:
             progress_callback("Mode offline: Menyeleksi segmen audio & merumuskan hook viral...", 55)
 

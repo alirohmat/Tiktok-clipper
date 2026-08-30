@@ -3,8 +3,8 @@ Modul Model Data (Pydantic)
 Mendefinisikan skema data untuk transkrip, segmen, hasil analisis LLM, probe media, dan metadata klip.
 """
 
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Segment(BaseModel):
@@ -38,17 +38,76 @@ class PodcastContext(BaseModel):
 
 
 class ClipCandidate(BaseModel):
-    """Format kandidat klip yang dihasilkan oleh Groq LLM."""
-    start_segment_id: int = Field(..., description="ID segmen awal yang dipilih LLM")
-    end_segment_id: int = Field(..., description="ID segmen akhir yang dipilih LLM")
-    score: int = Field(..., description="Skor potensi viral/kualitas (0-100)")
-    title: str = Field(..., max_length=80, description="Judul singkat klip (maks 80 karakter)")
-    hook: str = Field(..., max_length=120, description="Hook 3 detik pertama (maks 120 karakter)")
-    caption: str = Field(..., description="Caption SEO dengan kata kunci di awal")
-    hashtags: List[str] = Field(..., description="3-5 hashtag relevan tanpa tanda pagar")
-    cta: str = Field(..., description="Call To Action natural")
-    reason: str = Field(..., description="Alasan klip ini dipilih")
-    loop_suggestion: str = Field(..., description="Saran transisi akhir video ke awal video")
+    """Format kandidat klip yang dihasilkan oleh Groq / Meta Muse Spark / Universal LLM."""
+    start_segment_id: int = Field(default=0, description="ID segmen awal yang dipilih LLM")
+    end_segment_id: int = Field(default=0, description="ID segmen akhir yang dipilih LLM")
+    score: int = Field(default=85, description="Skor potensi viral/kualitas (0-100)")
+    title: str = Field(default="Klip Menarik", description="Judul singkat klip")
+    hook: str = Field(default="", description="Hook 3 detik pertama")
+    caption: str = Field(default="", description="Caption SEO dengan kata kunci di awal")
+    hashtags: List[str] = Field(default_factory=lambda: ["podcast", "tiktok", "viral"], description="3-5 hashtag relevan")
+    cta: str = Field(default="Simpan dan bagikan video ini!", description="Call To Action natural")
+    reason: str = Field(default="Alur cerita utuh dan berbobot.", description="Alasan klip ini dipilih")
+    loop_suggestion: str = Field(default="Looping natural.", description="Saran transisi akhir video ke awal video")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sanitize_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        
+        # Penyesuaian nama field alternatif dari berbagai model
+        start_id = data.get("start_segment_id") or data.get("start_id") or data.get("startSegmentId") or data.get("start") or 0
+        end_id = data.get("end_segment_id") or data.get("end_id") or data.get("endSegmentId") or data.get("end") or 0
+        
+        try:
+            data["start_segment_id"] = int(start_id)
+        except Exception:
+            data["start_segment_id"] = 0
+            
+        try:
+            data["end_segment_id"] = int(end_id)
+        except Exception:
+            data["end_segment_id"] = 0
+
+        # Score parsing
+        raw_score = data.get("score", 85)
+        try:
+            data["score"] = int(raw_score)
+        except Exception:
+            data["score"] = 85
+
+        # Title & Hook truncation (mencegah error max_length jika LLM menghasilkan teks panjang)
+        if "title" in data and isinstance(data["title"], str):
+            data["title"] = data["title"].strip()[:100]
+        else:
+            data["title"] = "Momen Terbaik Video"
+
+        if "hook" in data and isinstance(data["hook"], str):
+            data["hook"] = data["hook"].strip()[:150]
+        else:
+            data["hook"] = data["title"]
+
+        # Hashtags parsing (handle string koma/spasi atau list)
+        raw_tags = data.get("hashtags")
+        if isinstance(raw_tags, str):
+            tags = [t.strip().lstrip("#") for t in raw_tags.replace(",", " ").split() if t.strip()]
+            data["hashtags"] = tags[:5] if tags else ["podcast", "tiktok", "viral"]
+        elif isinstance(raw_tags, list):
+            data["hashtags"] = [str(t).strip().lstrip("#") for t in raw_tags if str(t).strip()][:5]
+        else:
+            data["hashtags"] = ["podcast", "tiktok", "viral"]
+
+        if not data.get("caption"):
+            data["caption"] = f"{data['hook']} Simak penjelasan lengkapnya dan tinggalkan pendapatmu!"
+        if not data.get("cta"):
+            data["cta"] = "Simpan dan share video ini!"
+        if not data.get("reason"):
+            data["reason"] = "Pernyataan berbobot dari transkrip percakapan."
+        if not data.get("loop_suggestion"):
+            data["loop_suggestion"] = "Looping natural."
+
+        return data
 
 
 class ClipAnalysisResult(BaseModel):

@@ -736,18 +736,21 @@ export default function App() {
                         </label>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                           {[
-                            { id: "auto", label: "Auto Server", badge: "Default" },
-                            { id: "openai", label: "OpenAI", badge: "GPT-4o" },
+                            { id: "auto", label: "Auto .env", badge: "Server Default" },
+                            { id: "meta", label: "Meta AI", badge: "Muse Spark 1.2" },
                             { id: "deepseek", label: "DeepSeek", badge: "V3 / R1" },
+                            { id: "openai", label: "OpenAI", badge: "GPT-4o" },
                             { id: "openrouter", label: "OpenRouter", badge: "Universal" },
                             { id: "groq", label: "Groq", badge: "Llama 3.3" },
-                            { id: "custom", label: "Custom API", badge: "OpenAI-Comp" },
+                            { id: "custom", label: "Custom Endpoint", badge: "Ollama / vLLM" },
                           ].map((p) => (
                             <button
                               key={p.id}
                               type="button"
                               onClick={() => {
                                 setLlmProvider(p.id);
+                                if (p.id === "meta" && !llmModel) setLlmModel("muse-spark-1.2-contributor");
+                                if (p.id === "custom" && !llmModel) setLlmModel("muse-spark");
                                 if (p.id === "openai" && !llmModel) setLlmModel("gpt-4o-mini");
                                 if (p.id === "deepseek" && !llmModel) setLlmModel("deepseek-chat");
                                 if (p.id === "openrouter" && !llmModel) setLlmModel("deepseek/deepseek-chat");
@@ -770,36 +773,39 @@ export default function App() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                         <div className="space-y-1">
                           <label className="text-[11px] font-medium text-slate-300">
-                            LLM API Key ({llmProvider === "auto" ? "Opsional" : llmProvider.toUpperCase()})
+                            LLM API Key ({llmProvider === "auto" ? "Opsional jika diisi di .env" : llmProvider === "custom" ? "Opsional / EMPTY" : llmProvider.toUpperCase()})
                           </label>
                           <input
                             type="password"
                             value={llmApiKey}
                             onChange={(e) => setLlmApiKey(e.target.value)}
-                            placeholder={llmProvider === "openai" ? "sk-..." : llmProvider === "deepseek" ? "sk-..." : "API Key..."}
+                            placeholder={llmProvider === "custom" ? "EMPTY (atau key jika ada)" : llmProvider === "openai" ? "sk-..." : "API Key..."}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
                           />
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[11px] font-medium text-slate-300">Model Name (e.g. gpt-4o, deepseek-chat)</label>
+                          <label className="text-[11px] font-medium text-slate-300">Model Name (e.g. muse-spark, gpt-4o)</label>
                           <input
                             type="text"
                             value={llmModel}
                             onChange={(e) => setLlmModel(e.target.value)}
-                            placeholder={llmProvider === "deepseek" ? "deepseek-chat" : llmProvider === "openai" ? "gpt-4o" : "Nama model..."}
+                            placeholder={llmProvider === "custom" ? "muse-spark" : llmProvider === "deepseek" ? "deepseek-chat" : "Nama model..."}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
                           />
                         </div>
 
                         {(llmProvider === "custom" || llmProvider === "openrouter" || llmBaseUrl) && (
                           <div className="space-y-1 sm:col-span-2">
-                            <label className="text-[11px] font-medium text-slate-300">Custom Base URL (OpenAI-compatible endpoint)</label>
+                            <label className="text-[11px] font-medium text-slate-300 flex items-center justify-between">
+                              <span>Custom Base URL (OpenAI-Compatible Endpoint)</span>
+                              <span className="text-[10px] text-pink-400">Docker: http://host.docker.internal:8000/v1</span>
+                            </label>
                             <input
                               type="text"
                               value={llmBaseUrl}
                               onChange={(e) => setLlmBaseUrl(e.target.value)}
-                              placeholder="https://api.openai.com/v1 atau http://localhost:11434/v1"
+                              placeholder="http://host.docker.internal:8000/v1 atau http://localhost:11434/v1"
                               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
                             />
                           </div>

@@ -7,16 +7,31 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - PORT=3000
       - NODE_ENV=production
+      - RUNNING_IN_DOCKER=1
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GROQ_WHISPER_MODEL=${GROQ_WHISPER_MODEL:-whisper-large-v3}
-      - GROQ_LLM_MODEL=${GROQ_LLM_MODEL:-openai/gpt-oss-120b}
-      - DEFAULT_MIN_DURATION=15
-      - DEFAULT_MAX_DURATION=60
-      - DEFAULT_NUM_CLIPS=3
-      - DEFAULT_NICHE=umum
+      - GROQ_LLM_MODEL=${GROQ_LLM_MODEL:-llama-3.3-70b-versatile}
+      - LLM_PROVIDER=${LLM_PROVIDER:-meta}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.meta.ai/v1}
+      - LLM_MODEL=${LLM_MODEL:-muse-spark-1.2-contributor}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DEFAULT_MIN_DURATION=${DEFAULT_MIN_DURATION:-15}
+      - DEFAULT_MAX_DURATION=${DEFAULT_MAX_DURATION:-60}
+      - DEFAULT_NUM_CLIPS=${DEFAULT_NUM_CLIPS:-3}
+      - DEFAULT_NICHE=${DEFAULT_NICHE:-auto}
     volumes:
       # Persistensi direktori output klip video yang dihasilkan
       - ./output:/app/output
@@ -26,3 +41,4 @@ services:
       - ./logs:/app/logs
       # Opsional: Berkas cookies YouTube jika diperlukan
       - ./cookies.txt:/app/cookies.txt:ro
+
