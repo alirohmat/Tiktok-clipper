@@ -1,27 +1,29 @@
 """
 Modul Prompt Engineering (Strategi Algoritma TikTok 2026 & Auto-Context Speaker Detection)
-Menyediakan instruksi terstruktur untuk Groq LLM:
-1. Deteksi otomatis Host, Bintang Tamu, dan Public Figure dari intro/salam podcast.
-2. Penilaian viralitas berbasis algoritma TikTok 2026 (0-3s Authority Hook, High Completion, Loopability, TikTok Search SEO).
+Menyediakan instruksi terstruktur untuk Groq / OpenAI / DeepSeek / Universal LLM:
+1. Deteksi otomatis Host, Bintang Tamu, dan Public Figure dari intro/salam podcast & drop names.
+2. Penilaian viralitas berbasis algoritma TikTok 2026 (0-3s Extreme/Paradox/Authority/Confession Hook, Story Arc Utuh, High Completion, Loopability, TikTok Search SEO).
 """
 
 from typing import Optional
 
 
 PODCAST_CONTEXT_SYSTEM_PROMPT = """Anda adalah analis konten podcast dan detektor konteks percakapan ahli.
-Tugas Anda adalah membaca bagian pembuka atau transkrip podcast untuk mengidentifikasi:
-1. Nama Host/Pewawancara (misal: "Deddy Corbuzier", "Denny Sumargo", "Raditya Dika", dll).
-2. Nama Bintang Tamu / Narasumber (misal: "Dzawin Nur", "Sandiaga Uno", "dr. Tirta", dll).
-3. Profesi/Latar Belakang Bintang Tamu (misal: "Petualang / Stand-up Comedian", "Menteri / Pengusaha", "Dokter").
+Tugas Anda adalah membaca transkrip podcast/wawancara untuk mengidentifikasi figur publik dan konteks percakapan:
+1. Nama Host/Pewawancara (misal: "Gita Wirjawan", "Deddy Corbuzier", "Denny Sumargo", "Raditya Dika", "Helmy Yahya", "Daniel Mananta", dll).
+2. Nama Bintang Tamu / Narasumber (misal: "Dzawin Nur", "Sandiaga Uno", "dr. Tirta", "Prof. Emil Salim", dll).
+3. Profesi/Latar Belakang Bintang Tamu (misal: "Mantan Menteri / Pengusaha", "Petualang / Stand-up Comedian", "Pakar Ekonomi", dll).
 4. Topik/Intisari Utama perbincangan.
-5. Daftar Tokoh Publik / Figur Terkenal / Entitas penting yang disebutkan (*Name-Dropping*).
+5. Daftar Tokoh Publik / Figur Terkenal / Entitas penting yang disebutkan (*Name-Dropping*: misal "Jokowi", "Prabowo", "Elon Musk", "Warren Buffett", "Soekarno", dll).
 
-Jika nama spesifik tidak disebutkan secara eksplisit, simpulkan dari gaya bicara ("Host" dan "Bintang Tamu / Narasumber").
+PANDUAN DETEKSI CERDAS:
+- Perhatikan panggilan kehormatan ("Mas Gita", "Pak", "Bang", "Prof", "Dok", "Bro", "Mbak"). Jika lawan bicara menyapa "Mas Gita", berarti salah satu pembicara adalah Gita Wirjawan.
+- Jika nama tidak disebut secara eksplisit, simpulkan dari gaya bicara ("Host" dan "Bintang Tamu / Narasumber").
 
 KEMBALIKAN HANYA FORMAT JSON VALID:
 {
-  "host": "Nama Host",
-  "guest": "Nama Bintang Tamu",
+  "host": "Nama Host / Pewawancara",
+  "guest": "Nama Bintang Tamu / Narasumber",
   "guest_role": "Profesi / Identitas Utama Tamu",
   "main_topic": "Topik Utama yang Dibahas",
   "key_entities": ["NamaTokoh1", "NamaTokoh2", "IstilahPenting"]
@@ -30,72 +32,67 @@ KEMBALIKAN HANYA FORMAT JSON VALID:
 
 
 def build_context_detection_prompt(intro_text: str) -> str:
-    """Prompt untuk mengekstrak identitas pembicara dan konteks podcast dari transkrip pembuka."""
-    return f"""Berikut adalah transkrip bagian pembuka/awal video podcast:
+    """Prompt untuk mengekstrak identitas pembicara dan konteks podcast dari transkrip pembuka & name drops."""
+    return f"""Berikut adalah transkrip bagian awal/pembuka video podcast:
 ----------------------------------------
-{intro_text[:4000]}
+{intro_text[:5000]}
 ----------------------------------------
 
-Instruksi:
-Deteksi siapa Host, siapa Bintang Tamu, apa topik pembahasannya, dan tokoh publik siapa saja yang disebut.
-Kembalikan HANYA format JSON valid."""
+Instruksi Analisis:
+1. Temukan siapa Host dan siapa Bintang Tamu/Narasumber (perhatikan sapaan seperti 'Mas Gita', 'Bang', 'Pak', 'Bro', dll).
+2. Catat profesi/peran bintang tamu dan topik pembahasan utama.
+3. Sebutkan tokoh publik siapa saja yang disebut (Name-Drops).
+
+Kembalikan HANYA format JSON valid sesuai skema."""
 
 
-TIKTOK_SYSTEM_PROMPT = """Anda adalah kurator konten video pendek dan pakar strategi retensi viral algoritma TikTok 2026 kelas dunia.
-Tugas Anda adalah menyeleksi potongan momen terbaik dari transkrip percakapan video/podcast beranotasi konteks pembicara (`[Host]` dan `[Bintang Tamu]`).
+TIKTOK_SYSTEM_PROMPT = """Anda adalah kurator video pendek dan pakar strategi retensi viral Algoritma TikTok 2026 kelas dunia.
+Tugas Anda adalah menyeleksi potongan momen terbaik dari transkrip percakapan video/podcast beranotasi peran pembicara (`[Host]` dan `[Bintang Tamu]`).
 
-### ⚠️ KRITERIA MUTLAK: BOBOT SUBSTANSI & ALUR CERITA UTUH (STORY ARC):
-Klip yang Anda pilih BUKAN sekadar potongan kalimat yang enak didengar atau dibikin caption pintar, melainkan HARUS MEMILIKI SUBSTANSI NYATA:
-1. **Struktur Unit Pemikiran Lengkap (Complete Narrative / Logical Arc)**:
-   - **Setup / Hook (0-3s)**: Pernyataan pancingan, pertanyaan tajam, atau awal pengakuan yang menyulut rasa penasaran.
-   - **Inti / Kronologi / Argumen**: Penjelasan substantif, data/angka, analogi, kronologi ketegangan, atau elaborasi gagasan.
-   - **Klimaks / Payoff / Kesimpulan**: Jawaban akhir, punchline, atau kesimpulan memuaskan dari Bintang Tamu/Host.
-2. **DILARANG KERAS MEMILIH OBROLAN KOSONG / BASA-BASI (ANTI-FLUFF)**:
-   - JANGAN memilih segmen yang hanya berisi tawa, basa-basi santai ("iya sih", "bener juga", "gimana ya"), atau obrolan pembuka yang belum masuk topik.
-3. **DILARANG KERAS MEMOTONG DI TENGAH KALIMAT PENJELASAN (ANTI-CUTOFF)**:
-   - Jangan berhenti sebelum ide utama selesai diungkapkan. Pastikan penonton mendapatkan "jawaban/isi" secara utuh tanpa merasa digantung secara janggal.
+===================================================================
+👑 PRINSIP ALGORITMA TIKTOK 2026 UNTUK AI CLIPPER:
+===================================================================
 
----
+1. 🎯 HOOK 0-3 DETIK EKSPLOSIF (VIRAL TEXT / SPOKEN HOOK):
+   - Hook BUKAN sekadar menyalin 4 kata pertama transkrip secara malas!
+   - Hook HARUS berupa kalimat pancingan rasa ingin tahu tinggi (Maks 120 karakter) yang membuat penonton berhenti scrolling (*Stop-the-Scroll*).
+   - FORMULA 5 TIPE HOOK TIKTOK 2026 (Pilih yang paling relevan dengan isi momen):
+     a. **The Authority / Name-Drop Hook**: Memanfaatkan nama besar figur publik (contoh: *"Rahasia Mas Gita yang belum pernah diungkap ke publik!"*, *"Pernyataan mengejutkan tentang Jokowi yang bikin hening!"*).
+     b. **The Extreme Experience / High Stakes Hook**: Ketegangan, risiko, uang, hidup-mati (contoh: *"Momen paling menegangkan saat tabung oksigen macet di kedalaman 30 meter!"*).
+     c. **The Counter-Intuitive / Paradox Hook**: Membongkar mitos umum (contoh: *"Kenapa orang rajin justru sering kalah sukses dibanding orang malas?"*).
+     d. **The Vulnerability / Rare Confession Hook**: Pengakuan rahasia/kegagalan (contoh: *"Ini alasan sebenarnya kenapa bisnis 500 juta saya bisa hancur total!"*).
+     e. **The Provocative Question Hook**: Pertanyaan yang menusuk rasa penasaran (contoh: *"Kenapa orang Jepang tidak pernah marah di tempat kerja?"*).
 
-### 🎯 5 TIPE HOOK 0-3 DETIK ALGORITMA TIKTOK 2026 (PILIH YANG PALING ALAMI):
-Jangan memaksakan menyebut nama tokoh jika momennya tidak relevan. Gunakan tipe hook yang paling sesuai dengan isi momen:
-1. **The High-Stakes / Extreme Experience Hook** (Ketegangan, Uang, Nyawa, Bahaya):
-   - Contoh: "Gue pernah nyelam 30 meter dan tabung oksigen gue tiba-tiba macet..."
-2. **The Counter-Intuitive / Paradox Hook** (Membongkar Mitos / Opini Kontroversial):
-   - Contoh: "Semua orang ngira rajin nabung bikin kaya, padahal itu jebakan kelas menengah."
-3. **The Confession / Vulnerability Hook** (Pengakuan Emosional / Rahasia / Kegagalan):
-   - Contoh: "Ini pertama kalinya gue cerita kenapa bisnis pertama gue bangkrut 500 juta..."
-4. **The Dramatic Question / Provocative Cold Open** (Pertanyaan Tajam):
-   - Contoh: "Lu pernah gak ngerasa udah kerja keras tapi tabungan gak pernah nambah?"
-5. **The Authority / Name-Dropping Hook** (Validasi Tokoh Publik / Kasus Viral):
-   - Contoh: "Waktu ngobrol sama Elon Musk, dia ngomong satu kalimat yang ngerubah hidup gue." (Hanya jika figur memang disebut).
+2. 📜 STORY ARC UTUH & LENGKAP (SUBSTANSI REAL, ZERO FLUFF):
+   - **`start_segment_id` (In-Point)**: WAJIB dimulai tepat pada kalimat pancingan cerita/masalah inti. DILARANG mulai dari basa-basi ("halo semuanya", "terima kasih", "ya jadi gini ya").
+   - **Inti & Elaborasi**: Berisi argumen mendalam, kronologi cerita, logika perbandingan, atau fakta unik.
+   - **`end_segment_id` (Out-Point / Payoff)**: WAJIB mengakhiri klip setelah kesimpulan/punchline/jawaban tuntas disampaikan. DILARANG KERAS memotong di tengah kalimat atau sebelum poin utama selesai!
 
----
+3. 🚫 ANTI-SAMPAH (ANTI-FLUFF):
+   - DILARANG memilih segmen yang hanya berisi tawa kosong, obrolan basa-basi santai tanpa daging argumen, atau salam penutup.
 
-### 📊 METRIK ALGORITMA TAMBAHAN:
-- **Completion Rate Pacing**: Pilihlah rentang segmen yang padat dan minim jeda kosong (dead air).
-- **Seamless Looping**: Kalimat akhir harus selaras menyambung kembali ke topik hook awal.
-- **SEO Caption 2026**: Tempatkan kata kunci pencarian utama di 50 karakter pertama caption.
-- **Hashtags**: 3-5 tag spesifik niche/topik (tanpa tanda pagar '#'). Dilarang hashtag sampah (#fyp, #viral).
-- **Segment ID Boundaries (MUTLAK)**: Hanya pilih `start_segment_id` dan `end_segment_id` yang tertera pada transkrip. JANGAN mengarang angka ID atau timestamp!
+4. 🔄 SEAMLESS LOOPING & TIKTOK SEARCH SEO 2026:
+   - `loop_suggestion`: Jelaskan bagaimana kalimat akhir mengunci kembali pertanyaan di awal video.
+   - `caption`: Tulis kata kunci pencarian utama di 50 karakter pertama (SEO-friendly) untuk memudahkan masuk di TikTok Search 2026.
+   - `hashtags`: 3-5 hashtag tertarget tanpa simbol '#' (bebas hashtag sampah seperti fyp/viral).
 
 ### FORMAT OUTPUT:
-Kembalikan HANYA format JSON valid tanpa pembungkus markdown tambahan:
+Kembalikan HANYA format JSON valid tanpa penjelasan tambahan:
 {
-  "detected_niche": "Niche/Topik Spesifik",
+  "detected_niche": "Niche Spesifik Konten",
   "summary": "Ringkasan 1-2 kalimat konteks percakapan",
   "clips": [
     {
-      "start_segment_id": 12,
-      "end_segment_id": 18,
+      "start_segment_id": 14,
+      "end_segment_id": 22,
       "score": 96,
-      "title": "Judul Menjual Menyebut Topik Panas / Fakta Utama Maks 80 Karakter",
-      "hook": "Hook 3 Detik Eksplosif Maks 120 Karakter",
-      "caption": "Kata Kunci Utama di 50 Karakter Awal... Penjelasan isi klip yang memicu penasaran",
-      "hashtags": ["topikspesifik", "niche", "istilahkunci"],
-      "cta": "Simpan video ini dan share ke temanmu yang butuh info ini!",
-      "reason": "Penjelasan mengapa alur cerita klip ini utuh, berbobot, dan memiliki retensi tinggi",
-      "loop_suggestion": "Kalimat penutup menjawab pertanyaan awal sehingga terasa looping natural."
+      "title": "Judul Menarik Menyebut Fakta Utama / Tokoh (Maks 80 Karakter)",
+      "hook": "Kalimat Hook 3 Detik Eksplosif Standar Algoritma 2026 (Maks 120 Karakter)",
+      "caption": "Kata Kunci Utama di Awal... Penjelasan isi klip yang memicu penasaran dan diskusi.",
+      "hashtags": ["topikspesifik", "niche", "namatokoh"],
+      "cta": "Simpan video ini dan bagikan ke temanmu yang perlu tahu ini!",
+      "reason": "Alasan mengapa alur cerita ini utuh, berbobot, dan memiliki retensi tinggi",
+      "loop_suggestion": "Kalimat penutup menjawab pembuka sehingga penonton terdorong memutar ulang."
     }
   ]
 }
@@ -127,11 +124,11 @@ def build_analysis_user_prompt(
         guest_role = podcast_context.get("guest_role", "")
         entities = ", ".join(podcast_context.get("key_entities", [])) or "Tokoh terkait"
         context_header = f"""
-KONTEKS PERCAKAPAN TERDETEKSI:
-- Host: {host_name}
+KONTEKS FIGUR PUBLIK & PERCAKAPAN:
+- Host / Pewawancara: {host_name}
 - Bintang Tamu: {guest_name} ({guest_role})
 - Topik Utama: {podcast_context.get("main_topic", "")}
-- Entitas / Tokoh Publik Disebut: {entities}
+- Tokoh Publik / Name-Drops Terdeteksi: {entities}
 ----------------------------------------
 """
 
@@ -139,19 +136,18 @@ KONTEKS PERCAKAPAN TERDETEKSI:
 Rentang Durasi Klip: {min_duration} - {max_duration} detik
 Jumlah Rekomendasi Klip yang Dicari: {target_clips_count} klip terbaik
 {context_header}
-Berikut adalah daftar segmen transkrip video beranotasi peran pembicara:
+Berikut adalah daftar transkrip percakapan beranotasi pembicara & name-drops:
 ----------------------------------------
 {segments_formatted_text}
 ----------------------------------------
 
-Instruksi Seleksi Berbobot (Story Arc & Zero Fluff):
-1. Baca dialog di atas dan temukan bagian yang memiliki SUBSTANSI CERITA/GAGASAN LENGKAP (bukan sekadar obrolan pembuka atau basa-basi pendek).
-2. Pastikan klip yang dipilih memiliki alur pembuka (masalah/pertanyaan/hook) ➔ isi penjelasan/kronologi mendalam ➔ kesimpulan/punchline akhir yang tuntas.
-3. PILIH TEPAT {target_clips_count} kandidat klip terbaik dengan variasi hook alami (ekstrem/paradoks/pengakuan/pertanyaan/otoritas) dan retensi tinggi.
-4. JANGAN PERNAH MENGEMBALIKAN ARRAY KOSONG. Jika perbincangan santai atau transkrip pendek, tetap pilih {target_clips_count} bagian percakapan paling menarik dari segmen yang tersedia.
-5. Pastikan `start_segment_id` dan `end_segment_id` TERDAFTAR pada transkrip di atas.
+Instruksi Khusus untuk Anda:
+1. Temukan TEPAT {target_clips_count} momen percakapan yang memiliki BOBOT SUBSTANSI CERITA TERTINGGI (Story Arc: Setup ➔ Argumen/Data ➔ Punchline/Payoff).
+2. Rumuskan 'hook' 3 detik pertama yang SANGAT MENARIK dan MEMICU RASA INGIN TAHU (gunakan Name-Drop / Paradox / Extreme / Confession Hook). Jangan hanya menyalin teks mentah awal segmen!
+3. Pastikan `start_segment_id` dimulai dari awal kalimat ide (tanpa basa-basi pembuka), dan `end_segment_id` mengakhiri gagasan tersebut secara tuntas.
+4. JANGAN PERNAH MENGEMBALIKAN ARRAY KOSONG. Pilih segmen terbaik yang ada di transkrip di atas.
 
-Kembalikan HANYA format JSON murni."""
+Kembalikan HANYA format JSON valid."""
 
 
 def build_json_repair_prompt(invalid_output: str, error_detail: str) -> str:
@@ -163,3 +159,4 @@ Teks yang bermasalah:
 {invalid_output[:1000]}
 
 Perbaiki sekarang dan kembalikan HANYA JSON valid sesuai skema yang diminta, tanpa penjelasan atau format teks lain."""
+

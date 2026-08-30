@@ -189,38 +189,65 @@ def detect_podcast_context(
     transcript: TranscriptData
 ) -> Optional[PodcastContext]:
     """
-    Auto-Context Speaker Detection (Tanpa Vision):
-    Membaca intro dan salam pembuka podcast (2-3 menit pertama) untuk mengidentifikasi
-    nama Host, nama Bintang Tamu, latar belakang/profesi, dan tokoh-tokoh penting yang disebut.
+    Auto-Context Speaker & Name-Drop Detection (Tanpa Vision):
+    Membaca intro, salam pembuka, dan menyisir sapaan figur publik (Mas/Pak/Bang/Prof/dll.)
+    di sepanjang transkrip untuk mengidentifikasi Host, Bintang Tamu, dan seluruh Name-Drops.
     """
     if not transcript.segments:
         return None
 
-    # Ambil 80 segmen awal (sekitar 2-3 menit pertama yang memuat salam/intro)
-    intro_segments = transcript.segments[:min(80, len(transcript.segments))]
+    # 1. Pindai nama-nama tokoh/honorifics di sepanjang transkrip (Regex Name-Dropping Scanner)
+    name_patterns = re.findall(
+        r'\b(?:Mas|Pak|Bang|Prof|Dok|Mbak|Bung|Gus|Kak)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+        transcript.text
+    )
+    detected_name_drops = list(dict.fromkeys(name_patterns))[:8]  # Ambil hingga 8 nama unik teratas
+
+    # 2. Ambil 120 segmen awal (sekitar 3-5 menit pertama yang memuat salam/intro/perkenalan)
+    intro_segments = transcript.segments[:min(120, len(transcript.segments))]
     intro_text = " ".join(s.text.strip() for s in intro_segments)
     
     if len(intro_text.strip()) < 30:
         return None
 
     import hashlib
-    ctx_hash = hashlib.sha256(intro_text[:1000].encode("utf-8")).hexdigest()
+    ctx_hash = hashlib.sha256((intro_text[:1200] + "_" + "_".join(detected_name_drops)).encode("utf-8")).hexdigest()
     cached_ctx = get_cache("podcast_context", ctx_hash)
     if cached_ctx:
-        logger.info("Memuat konteks pembicara & podcast dari cache...")
+        logger.info("Memuat konteks figur publik & podcast dari cache...")
         return PodcastContext(**cached_ctx)
 
-    user_prompt = build_context_detection_prompt(intro_text)
+    # Tambahkan nama-nama yang terpindai ke prompt deteksi
+    augmented_intro = intro_text
+    if detected_name_drops:
+        augmented_intro += f"\n[Catatan Entitas/Sapaan Terdeteksi di Transkrip: {', '.join(detected_name_drops)}]"
+
+    user_prompt = build_context_detection_prompt(augmented_intro)
     
-    logger.info("Menjalankan Auto-Context Speaker Detection pada bagian pembuka video...")
+    logger.info("Menjalankan Auto-Context Speaker & Name-Drop Detection pada video...")
     resp_text, err = _call_universal_llm(
         system_prompt=PODCAST_CONTEXT_SYSTEM_PROMPT,
         user_prompt=user_prompt
     )
 
     if err or not resp_text:
-        logger.warning(f"Gagal mendeteksi konteks podcast: {err}")
-        return None
+        logger.warning(f"Gagal mendeteksi konteks podcast via LLM: {err}. Menggunakan deteksi heuristik...")
+        # Heuristic fallback context jika LLM gagal
+        host_candidate = "Host"
+        guest_candidate = "Narasumber / Bintang Tamu"
+        if detected_name_drops:
+            host_candidate = f"Mas {detected_name_drops[0]}"
+            if len(detected_name_drops) > 1:
+                guest_candidate = detected_name_drops[1]
+        
+        ctx = PodcastContext(
+            host=host_candidate,
+            guest=guest_candidate,
+            guest_role="Figur Publik / Tamu Podcast",
+            main_topic="Perbincangan Podcast & Wawasan Strategis",
+            key_entities=detected_name_drops
+        )
+        return ctx
 
     clean_text = resp_text.strip()
     if clean_text.startswith("```json"):
@@ -233,9 +260,19 @@ def detect_podcast_context(
 
     try:
         data = json.loads(clean_text)
+        # Gabungkan entity tambahan yang terpindai jika belum ada di list LLM
+        key_ents = data.get("key_entities", [])
+        for nd in detected_name_drops:
+            if nd not in key_ents and len(key_ents) < 8:
+                key_ents.append(nd)
+        data["key_entities"] = key_ents
+
         ctx = PodcastContext(**data)
         save_cache("podcast_context", ctx_hash, ctx.model_dump())
-        logger.info(f"Konteks Terdeteksi: Host='{ctx.host}' | Tamu='{ctx.guest}' ({ctx.guest_role}) | Topik='{ctx.main_topic}'")
+        logger.info(
+            f"👤 Konteks Terdeteksi: Host='{ctx.host}' | Tamu='{ctx.guest}' ({ctx.guest_role}) | "
+            f"Topik='{ctx.main_topic}' | Entitas={ctx.key_entities}"
+        )
         return ctx
     except Exception as ex:
         logger.warning(f"Gagal mem-parsing konteks podcast ({ex}): {clean_text[:150]}")
@@ -308,18 +345,55 @@ def format_segments_for_llm(
     podcast_context: Optional[PodcastContext] = None
 ) -> str:
     """
-    Format daftar segmen menjadi teks ramah baca untuk LLM dengan ID jelas dan anotasi konteks pembicara.
+    Format daftar segmen menjadi teks ramah baca untuk LLM dengan ID jelas,
+    anotasi alur dialog dinamis (Host vs Tamu), serta penanda khusus untuk Name-Dropping & Momen Panas.
     CATATAN: Format ini hanya untuk prompt LLM, data segmen asli tetap utuh untuk rendering subtitle.
     """
     lines = []
-    host_tag = f"[{podcast_context.host} - Host]" if (podcast_context and podcast_context.host and podcast_context.host != "Host") else "[Host]"
-    guest_tag = f"[{podcast_context.guest} - Tamu]" if (podcast_context and podcast_context.guest and podcast_context.guest != "Bintang Tamu") else "[Bintang Tamu]"
+    host_name = podcast_context.host if (podcast_context and podcast_context.host and podcast_context.host != "Host") else "Host"
+    guest_name = podcast_context.guest if (podcast_context and podcast_context.guest and podcast_context.guest != "Bintang Tamu") else "Bintang Tamu"
+    
+    key_entities = [e.lower() for e in (podcast_context.key_entities if podcast_context else [])]
+
+    # Pelacak giliran bicara (Dialogue Turn Tracker)
+    current_speaker = "guest"  # Tamu biasanya mendominasi porsi bicara
 
     for s in segments:
         text_clean = s.text.strip()
-        is_question = text_clean.endswith("?") or any(text_clean.lower().startswith(q) for q in ["kenapa", "gimana", "apa", "kapan", "siapa", "mengapa", "serius", "lu pernah", "menurut lu"])
-        speaker_hint = host_tag if (is_question and len(text_clean.split()) < 16) else guest_tag
-        lines.append(f"[ID:{s.id}] ({s.start:.1f}s - {s.end:.1f}s) {speaker_hint}: {text_clean}")
+        text_lower = text_clean.lower()
+
+        # Deteksi apakah segmen ini adalah pertanyaan atau interjeksi khas Host
+        is_short_question = (
+            text_clean.endswith("?") or 
+            any(text_lower.startswith(q) for q in ["kenapa", "gimana", "apa", "kapan", "siapa", "mengapa", "menurut", "lu pernah", "serius", "apakah"])
+        ) and len(text_clean.split()) < 18
+
+        is_short_reaction = any(text_lower == r for r in ["iya", "betul", "benar", "wah", "gila sih", "menarik", "oke", "setuju", "siap"])
+
+        # Deteksi Name-Drops di dalam segmen
+        found_drops = []
+        for ent in key_entities:
+            if ent in text_lower:
+                found_drops.append(ent.title())
+        
+        # Pindai sapaan spesifik (Mas Gita, Pak, dll.)
+        honorific_drops = re.findall(r'\b(?:Mas|Pak|Bang|Prof|Dok|Mbak|Bung|Gus)\s+([A-Z][a-z]+)', text_clean)
+        for hd in honorific_drops:
+            if hd.title() not in found_drops:
+                found_drops.append(hd.title())
+
+        # Tentukan pembicara saat ini
+        if is_short_question or (is_short_reaction and current_speaker == "guest"):
+            current_speaker = "host"
+        elif len(text_clean.split()) > 10:
+            current_speaker = "guest"
+
+        speaker_tag = f"🎙️ [{host_name} - Host]" if current_speaker == "host" else f"🗣️ [{guest_name} - Tamu]"
+        
+        drop_tag = f" | 🔥 Name-Drop: {', '.join(found_drops[:2])}" if found_drops else ""
+        
+        lines.append(f"[ID:{s.id}] ({s.start:.1f}s - {s.end:.1f}s) {speaker_tag}{drop_tag}: \"{text_clean}\"")
+
     return "\n".join(lines)
 
 
@@ -403,9 +477,8 @@ def generate_heuristic_fallback_clips(
     podcast_context: Optional[PodcastContext] = None
 ) -> List[ValidatedClip]:
     """
-    Ekstraksi klip pintar berbasis kepadatan kata audio & batas kalimat alami.
-    Menjamin proses clipping 100% SUKSES dan TIDAK PERNAH GAGAL meskipun LLM mengalami timeout,
-    format tidak cocok, atau rentang durasi video sempit.
+    Ekstraksi klip pintar berbasis kepadatan kata audio, Name-Drop, & formula Hook Algoritma 2026.
+    Menjamin proses clipping 100% SUKSES dan menghasilkan hook yang menarik meskipun LLM timeout.
     """
     if not segments:
         return []
@@ -421,8 +494,8 @@ def generate_heuristic_fallback_clips(
     step = max(target_clip_len * 0.7, (total_duration - target_clip_len) / max(1, num_clips))
     fallback_candidates: List[ClipCandidate] = []
 
-    host_name = podcast_context.host if podcast_context else "Pembicara"
-    guest_name = podcast_context.guest if podcast_context else "Narasumber"
+    host_name = podcast_context.host if (podcast_context and podcast_context.host != "Host") else "Host"
+    guest_name = podcast_context.guest if (podcast_context and podcast_context.guest != "Bintang Tamu") else "Narasumber"
 
     for i in range(num_clips):
         target_start = segments[0].start + (i * step)
@@ -430,7 +503,6 @@ def generate_heuristic_fallback_clips(
 
         matching_segs = [s for s in segments if s.end >= target_start and s.start <= target_end]
         if not matching_segs:
-            # Ambil potongan proporsional
             chunk_size = max(1, len(segments) // num_clips)
             idx_start = min(len(segments) - 1, i * chunk_size)
             idx_end = min(len(segments), idx_start + chunk_size)
@@ -445,28 +517,47 @@ def generate_heuristic_fallback_clips(
         first_text = matching_segs[0].text.strip()
         all_text = " ".join(s.text.strip() for s in matching_segs)
         
-        # Buat judul dan hook yang natural dari percakapan nyata
-        words = first_text.split()
-        if len(words) >= 4:
-            title_text = " ".join(words[:7])
-        else:
-            title_text = first_text[:50] or f"Sorotan Utama Bagian {i+1}"
+        # Pindai apakah ada nama figur publik di dalam segmen ini
+        found_name = None
+        if podcast_context and podcast_context.key_entities:
+            for ke in podcast_context.key_entities:
+                if ke.lower() in all_text.lower():
+                    found_name = ke
+                    break
+        
+        if not found_name:
+            h_match = re.search(r'\b(?:Mas|Pak|Bang|Prof|Dok)\s+([A-Z][a-z]+)', all_text)
+            if h_match:
+                found_name = h_match.group(0)
 
-        hook_text = first_text[:110] if len(first_text) > 10 else f"Pernyataan penting dari {guest_name or host_name}!"
-        caption_text = f"{title_text}... Simak pembahasan selengkapnya di video ini."
+        # Formulasi Hook Algoritma TikTok 2026
+        if found_name:
+            hook_text = f"Rahasia penting tentang {found_name} yang belum pernah dibuka!"
+            title_text = f"Pengakuan Terbuka Tentang {found_name}"
+        elif "?" in first_text or any(first_text.lower().startswith(q) for q in ["kenapa", "gimana", "apa", "mengapa"]):
+            hook_text = f"Pertanyaan tak terduga yang bikin {guest_name} terdiam!"
+            title_text = f"Diskusi Panas: {first_text[:45]}..."
+        elif any(w in all_text.lower() for w in ["kaget", "gagal", "hancur", "sulit", "rahasia", "jebakan", "rugi"]):
+            hook_text = f"Peringatan penting dari {guest_name} sebelum kamu terlambat!"
+            title_text = f"Pelajaran Pahit dari {guest_name}"
+        else:
+            hook_text = f"Wawasan langka dari {guest_name} yang mengubah segalanya!"
+            title_text = f"Wawasan Penting: {first_text[:40]}..."
+
+        caption_text = f"{hook_text} Simak penjelasan lengkap dari {guest_name} dan diskusikan di kolom komentar!"
 
         fallback_candidates.append(
             ClipCandidate(
                 start_segment_id=s_id,
                 end_segment_id=e_id,
-                title=f"{title_text} #{i+1}"[:80],
+                title=f"{title_text}"[:80],
                 hook=hook_text[:120],
                 caption=caption_text[:220],
-                hashtags=["podcast", "highlight", "edukasi", "cerita", "viral"],
-                cta="Follow dan simpan video ini untuk info menarik lainnya!",
-                score=92 - (i * 2),
-                reason="Segmen percakapan audio padat dengan penyampaian gagasan yang jelas.",
-                loop_suggestion="Kalimat penutup menyambung kembali dengan intisari awal video."
+                hashtags=["podcast", "wawasan", "edukasi", "cerita", "viral"],
+                cta="Simpan dan share video ini ke teman yang butuh wawasan ini!",
+                score=94 - (i * 2),
+                reason="Segmen percakapan audio berbobot dengan alur gagasan yang utuh.",
+                loop_suggestion="Kalimat penutup menjawab pembuka sehingga penonton terdorong memutar ulang."
             )
         )
 
@@ -625,58 +716,20 @@ def analyze_transcript(
     provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
 
     if not api_key:
-        logger.warning("API Key LLM tidak ditemukan, menggunakan analisis berbasis segmen audio aktual...")
+        logger.warning("API Key LLM tidak ditemukan, menggunakan analisis berbasis segmen audio & formula hook 2026...")
         if progress_callback:
-            progress_callback("Mode offline: Menyeleksi segmen audio paling padat...", 55)
+            progress_callback("Mode offline: Menyeleksi segmen audio & merumuskan hook viral...", 55)
 
-        total_duration = transcript.duration or (transcript.segments[-1].end if transcript.segments else 60.0)
-        target_clip_len = max(min_duration, min(max_duration, 35.0))
+        # Jalankan deteksi figur publik heuristik
+        podcast_context = detect_podcast_context(transcript)
         
-        fallback_candidates: List[ClipCandidate] = []
-        step = max(target_clip_len * 0.8, (total_duration - target_clip_len) / max(1, num_clips))
-        
-        for i in range(num_clips):
-            s_time = i * step
-            e_time = min(total_duration, s_time + target_clip_len)
-            
-            # Cari segmen terdekat dari transkrip aktual
-            matching_segs = [s for s in transcript.segments if s.end >= s_time and s.start <= e_time]
-            if not matching_segs:
-                matching_segs = transcript.segments[:max(1, len(transcript.segments) // num_clips)]
-                
-            s_id = matching_segs[0].id if matching_segs else 1
-            e_id = matching_segs[-1].id if matching_segs else 1
-
-            # Buat teks dari segmen aktual
-            first_text = matching_segs[0].text.strip() if matching_segs else "Momen Penting Video"
-            joined_text = " ".join([s.text.strip() for s in matching_segs[:4]])
-            
-            words = first_text.split()
-            title_text = " ".join(words[:6]) if len(words) >= 4 else (first_text[:50] or f"Highlight Bagian {i+1}")
-            hook_text = first_text[:110] if len(first_text) > 10 else f"Simak fakta menarik pada bagian ke-{i+1} ini!"
-            caption_text = f"{title_text}... {joined_text[:120]} Tonton sampai habis untuk insight lengkapnya!"
-
-            fallback_candidates.append(
-                ClipCandidate(
-                    start_segment_id=s_id,
-                    end_segment_id=e_id,
-                    title=f"{title_text} (Part {i+1})"[:80],
-                    hook=hook_text[:120],
-                    caption=caption_text[:220],
-                    hashtags=["podcast", "highlight", "cerita", "edukasi", "viral"],
-                    cta="Simpan dan bagikan video ini untuk referensi nanti!",
-                    score=95 - (i * 3),
-                    reason="Kutipan langsung dari percakapan audio dengan topik menarik.",
-                    loop_suggestion="Kalimat penutup menyambung kembali dengan intisari awal video."
-                )
-            )
-
-        validated = validate_and_filter_clips(
-            raw_candidates=fallback_candidates,
-            all_segments=transcript.segments,
+        validated = generate_heuristic_fallback_clips(
+            segments=transcript.segments,
+            niche=niche,
             min_duration=min_duration,
             max_duration=max_duration,
-            target_count=num_clips
+            num_clips=num_clips,
+            podcast_context=podcast_context
         )
         return validated, None
 
