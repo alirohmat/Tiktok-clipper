@@ -22,7 +22,7 @@ def generate_sample_podcast_video(output_path: Path, duration: int = 45) -> bool
     logger.info(f"Membuat video sampel podcast ({duration} detik) di {output_path}...")
 
     # Rancang visual 1920x1080 dengan FFmpeg lavfi filter:
-    # Dua figur/box pembicara di kiri dan kanan dengan teks judul
+    # Dua figur pembicara di kiri dan kanan
     vf_script = (
         f"color=c=0x0f172a:s=1920x1080:d={duration}[bg];"
         f"color=c=0x1e293b:s=600x700:d={duration}[box_left];"
@@ -32,11 +32,7 @@ def generate_sample_podcast_video(output_path: Path, duration: int = 45) -> bool
         f"[bg][box_left]overlay=200:200[bg1];"
         f"[bg1][box_right]overlay=1120:200[bg2];"
         f"[bg2][face_l]overlay=410:320[bg3];"
-        f"[bg3][face_r]overlay=1330:320[bg4];"
-        f"[bg4]drawtext=text='HOST \\(Pembicara 1\\)':fontcolor=white:fontsize=32:x=350:y=550,"
-        f"drawtext=text='GUEST \\(Pembicara 2\\)':fontcolor=white:fontsize=32:x=1270:y=550,"
-        f"drawtext=text='PODCAST BISNIS & STRATEGI VIRAL 2026':fontcolor=0xf43f5e:fontsize=44:x=(w-text_w)/2:y=80,"
-        f"drawtext=text='Waktu\\: %{{pts\\:hms}}':fontcolor=0x94a3b8:fontsize=28:x=(w-text_w)/2:y=960[v_out]"
+        f"[bg3][face_r]overlay=1330:320[v_out]"
     )
 
     cmd = [

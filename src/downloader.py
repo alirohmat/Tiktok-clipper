@@ -16,7 +16,7 @@ from src.utils import logger, console, sanitize_filename
 
 
 def _find_available_cookies_file() -> Optional[Path]:
-    """Mencari berkas cookies.txt yang tersedia di sistem untuk autentikasi yt-dlp."""
+    """Mencari berkas cookies.txt yang valid (bukan direktori) untuk autentikasi yt-dlp."""
     potential_paths = [
         Settings.COOKIES_FILE,
         Path("cookies.txt"),
@@ -25,16 +25,35 @@ def _find_available_cookies_file() -> Optional[Path]:
         Path.home() / ".cookies.txt",
     ]
     for p in potential_paths:
-        if p and p.exists() and p.stat().st_size > 0:
-            logger.info(f"Menggunakan berkas cookies: {p.resolve()}")
-            return p
+        if p is not None:
+            try:
+                path_obj = Path(p)
+                # WAJIB pastikan path adalah berkas (is_file) dan bukan direktori untuk mencegah [Errno 21]
+                if path_obj.exists() and path_obj.is_file() and path_obj.stat().st_size > 0:
+                    logger.info(f"Menggunakan berkas cookies: {path_obj.resolve()}")
+                    return path_obj
+            except Exception:
+                continue
     return None
 
 
 def _is_direct_video_url(url: str) -> bool:
     """Mengecek apakah URL merupakan link direct file video atau cloud storage direct link."""
+    if not url:
+        return False
     clean_url = url.split("?")[0].lower()
-    video_extensions = ('.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts')
+    
+    # Platform media sosial & video streaming TIDAK BOLEH diproses sebagai file HTTP langsung
+    streaming_domains = (
+        "youtube.com", "youtu.be", "tiktok.com", "instagram.com",
+        "facebook.com", "fb.watch", "twitter.com", "x.com",
+        "twitch.tv", "vimeo.com", "bilibili.com", "dailymotion.com",
+        "reddit.com", "threads.net", "pinterest.com"
+    )
+    if any(domain in url.lower() for domain in streaming_domains):
+        return False
+
+    video_extensions = ('.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.ts', '.flv', '.3gp')
     if any(clean_url.endswith(ext) for ext in video_extensions):
         return True
     
@@ -42,8 +61,12 @@ def _is_direct_video_url(url: str) -> bool:
     if "dropbox.com" in url and ("dl=1" in url or "raw=1" in url):
         return True
 
-    # Layanan direct download / API download CDN (misal savenow, cdn, download/...)
-    if any(k in url.lower() for k in ["/download/", "/stream/", "/video/", "savenow.to", "googlevideo.com"]):
+    # Google Drive direct export download
+    if "drive.google.com" in url and ("export=download" in url or "confirm=t" in url):
+        return True
+
+    # Layanan direct download / API download CDN murni
+    if any(k in url.lower() for k in ["savenow.to", "googlevideo.com"]) and not any(d in url.lower() for d in streaming_domains):
         return True
         
     return False
@@ -77,7 +100,6 @@ def _extract_filename_from_cd(cd_header: Optional[str]) -> Optional[str]:
     match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)["\']?', cd_header, re.IGNORECASE)
     if match:
         name = match.group(1).strip()
-        # Bersihkan ekstensi jika ada
         return Path(name).stem
     return None
 
@@ -94,30 +116,48 @@ def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Pa
     }
     
     req = urllib.request.Request(normalized_url, headers=headers)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     
+    # Hapus file jika sebelumnya adalah direktori atau file rusak
+    if output_path.exists():
+        try:
+            if output_path.is_dir():
+                import shutil
+                shutil.rmtree(output_path)
+            else:
+                output_path.unlink()
+        except Exception:
+            pass
+            
     try:
-        with urllib.request.urlopen(req, timeout=90) as response, open(output_path, 'wb') as out_file:
+        with urllib.request.urlopen(req, timeout=90) as response:
             content_type = response.headers.get('content-type', '').lower()
             content_disposition = response.headers.get('content-disposition', '')
             content_length = response.headers.get('content-length')
+            
+            # Jika respon ternyata adalah halaman HTML (bukan stream video), batalkan
+            if 'text/html' in content_type or 'application/xhtml+xml' in content_type:
+                logger.warning(f"URL mengembalikan halaman HTML ({content_type}), bukan video stream.")
+                return None, None, "URL yang dimasukkan mengembalikan halaman web (HTML), bukan file video stream."
+                
             total_bytes = int(content_length) if content_length and content_length.isdigit() else 0
             downloaded = 0
             block_size = 1024 * 1024  # 1MB buffer
             
-            while True:
-                chunk = response.read(block_size)
-                if not chunk:
-                    break
-                out_file.write(chunk)
-                downloaded += len(chunk)
-                if total_bytes > 0 and downloaded % (5 * 1024 * 1024) < block_size:
-                    pct = (downloaded / total_bytes) * 100
-                    logger.info(f"Direct download progress: {pct:.1f}% ({downloaded / (1024*1024):.1f}/{total_bytes / (1024*1024):.1f} MB)")
-                elif total_bytes == 0 and downloaded % (5 * 1024 * 1024) < block_size:
-                    logger.info(f"Direct download stream: {downloaded / (1024*1024):.1f} MB terunduh (chunked)...")
+            with open(output_path, 'wb') as out_file:
+                while True:
+                    chunk = response.read(block_size)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    downloaded += len(chunk)
+                    if total_bytes > 0 and downloaded % (5 * 1024 * 1024) < block_size:
+                        pct = (downloaded / total_bytes) * 100
+                        logger.info(f"Direct download progress: {pct:.1f}% ({downloaded / (1024*1024):.1f}/{total_bytes / (1024*1024):.1f} MB)")
+                    elif total_bytes == 0 and downloaded % (5 * 1024 * 1024) < block_size:
+                        logger.info(f"Direct download stream: {downloaded / (1024*1024):.1f} MB terunduh...")
 
-        if output_path.exists() and output_path.stat().st_size > 1024:
-            # Ambil judul dari Content-Disposition jika ada (misal nama video podcast)
+        if output_path.exists() and output_path.is_file() and output_path.stat().st_size > 1024:
             cd_title = _extract_filename_from_cd(content_disposition)
             if cd_title:
                 file_title = cd_title
@@ -130,7 +170,7 @@ def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Pa
             
     except Exception as e:
         logger.warning(f"Gagal direct HTTP download ({e}), beralih ke yt-dlp engine...")
-        if output_path.exists():
+        if output_path.exists() and output_path.is_file():
             try:
                 output_path.unlink()
             except Exception:
@@ -159,7 +199,7 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
         if dl_path and not err:
             return dl_path, title or "direct_video", None
 
-    # 2. Gunakan yt-dlp untuk semua URL lainnya (atau fallback dari direct download)
+    # 2. Gunakan yt-dlp untuk semua URL streaming & fallback
     ydl_opts = {
         # Format video: Utamakan MP4 1080p/720p dengan audio m4a/aac
         'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best',
@@ -170,6 +210,11 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
         'merge_output_format': 'mp4',
         'retries': 3,
         'socket_timeout': 30,
+        'cachedir': False,  # WAJIB False untuk mencegah yt-dlp membuat cache yang konflik dengan folder ./cache [Errno 21]
+        'paths': {
+            'home': str(output_dir),
+            'temp': str(output_dir),
+        },
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'ios', 'web_creator', 'mweb'],
@@ -181,9 +226,9 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
         }
     }
 
-    # Pasang berkas cookie jika ditemukan
+    # Pasang berkas cookie jika ditemukan berkas valid
     cookies_path = _find_available_cookies_file()
-    if cookies_path:
+    if cookies_path and cookies_path.is_file():
         ydl_opts['cookiefile'] = str(cookies_path)
 
     video_title = "source_video"
@@ -201,7 +246,6 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
 
         logger.info(f"Memulai proses unduh video dari URL: {url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Ekstrak info meta terlebih dahulu
             info_dict = ydl.extract_info(url, download=True)
             if not info_dict:
                 return None, None, "Gagal mengekstrak informasi video dari URL yang diberikan."
@@ -211,11 +255,11 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
             
             # Cari file hasil unduhan
             expected_mp4 = output_dir / "source_video.mp4"
-            if expected_mp4.exists():
+            if expected_mp4.exists() and expected_mp4.is_file():
                 return expected_mp4, video_title, None
                 
             # Jika format lain terdownload (misal mkv/webm), cari file pertama di folder
-            downloaded_files = list(output_dir.glob("source_video.*"))
+            downloaded_files = [f for f in output_dir.glob("source_video.*") if f.is_file()]
             if downloaded_files:
                 return downloaded_files[0], video_title, None
                 
@@ -226,13 +270,20 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
         logger.error(f"Gagal mengunduh video dari URL: {err_msg}")
         
         # Penjelasan ramah & panduan solusi
-        if "Sign in to confirm you’re not a bot" in err_msg or "Sign in" in err_msg or "Private video" in err_msg:
+        if "Errno 21" in err_msg:
+            return None, None, (
+                "Terjadi konflik direktori saat mengunduh video ([Errno 21]).\n\n"
+                "💡 SOLUSI REKOMENDASI:\n"
+                "1. Gunakan tab 'Tautan Direct Video Podcast' untuk tautan file direct MP4 / Google Drive / Dropbox.\n"
+                "2. Atau pilih tab 'Unggah File Lokal' untuk mengunggah file video dari laptop Anda."
+            )
+        elif "Sign in to confirm you’re not a bot" in err_msg or "Sign in" in err_msg or "Private video" in err_msg:
             pesan = (
-                "YouTube memblokir unduhan langsung dari server (Deteksi Bot / Verifikasi Login Google).\n\n"
-                "💡 SOLUSI REKOMENDASI (Pilih salah satu):\n"
+                "Platform memblokir unduhan langsung dari server cloud (Deteksi Bot / Verifikasi Login).\n\n"
+                "💡 SOLUSI REKOMENDASI:\n"
                 "1. Gunakan Link File Langsung (Direct MP4 URL):\n"
-                "   Pilih tab 'Tautan Direct Video Podcast' untuk mengunduh video langsung dari server/CDN tanpa batasan YouTube.\n"
-                "2. Unggah File Lokal (Paling Mudah):\n"
+                "   Pilih tab 'Tautan Direct Video Podcast' di Web UI.\n"
+                "2. Unggah File Lokal (Paling Mudah & Stabil):\n"
                 "   Unduh video ke laptop Anda, lalu pilih tab 'Unggah File Lokal' di Web UI.\n"
                 "3. Gunakan Berkas cookies.txt:\n"
                 "   Ekspor cookies dari browser Anda lalu simpan sebagai 'cookies.txt' di folder proyek."
@@ -244,6 +295,6 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
                 "Solusi: Tunggu beberapa saat sebelum mencoba kembali, atau gunakan Link File Direct / Unggah Video Lokal."
             )
         else:
-            return None, None, f"Gagal mengunduh video: {err_msg[:250]}\nSolusi: Gunakan Link Direct MP4 atau tab 'Unggah Video Lokal'."
+            return None, None, f"{err_msg[:250]}\n💡 Solusi: Gunakan tab 'Tautan Direct Video' atau 'Unggah File Lokal'."
 
 

@@ -63,8 +63,12 @@ class Settings:
     DEFAULT_NUM_CLIPS: int = int(os.getenv("DEFAULT_NUM_CLIPS", "3"))
     DEFAULT_NICHE: str = os.getenv("DEFAULT_NICHE", "auto").strip()
 
-    # Lokasi Berkas Cookies YouTube / Platform Eksternal (jika ada)
-    COOKIES_FILE: Optional[Path] = Path(os.getenv("COOKIES_FILE", "cookies.txt")) if os.getenv("COOKIES_FILE") or Path("cookies.txt").exists() else None
+    # Lokasi Berkas Cookies YouTube / Platform Eksternal (jika ada berkas valid)
+    _cookie_env = os.getenv("COOKIES_FILE", "")
+    COOKIES_FILE: Optional[Path] = (
+        Path(_cookie_env) if (_cookie_env and Path(_cookie_env).is_file())
+        else (Path("cookies.txt") if Path("cookies.txt").is_file() else None)
+    )
 
     @classmethod
     def ensure_directories(cls) -> None:

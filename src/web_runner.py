@@ -94,7 +94,8 @@ def run_pipeline(
         source_dir = output_dir / "source"
         dl_path, title_slug, err_dl = download_video_from_url(input_source, source_dir)
         if err_dl or not dl_path:
-            emit_event("error", {"message": f"Gagal mengunduh video: {err_dl}"})
+            clean_err = err_dl if err_dl else "File video tidak ditemukan setelah proses unduh."
+            emit_event("error", {"message": clean_err})
             return 1
         video_path = dl_path
     else:
