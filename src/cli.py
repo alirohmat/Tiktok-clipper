@@ -452,3 +452,7 @@ def main_cli(
         border_style="green",
         title="✨ Sukses"
     ))
+
+
+if __name__ == "__main__":
+    app()
