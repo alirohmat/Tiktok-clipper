@@ -43,17 +43,38 @@ def run_pipeline(
     vertical_mode: str = "speaker",
     subtitles: bool = True,
     groq_api_key: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    llm_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model: Optional[str] = None,
     is_sample: bool = False
 ):
     if groq_api_key and groq_api_key.strip():
         Settings.GROQ_API_KEY = groq_api_key.strip()
         os.environ["GROQ_API_KEY"] = groq_api_key.strip()
 
-    # Bersihkan GROQ_BASE_URL dari environment
+    if llm_provider and llm_provider.strip():
+        Settings.LLM_PROVIDER = llm_provider.strip()
+        os.environ["LLM_PROVIDER"] = llm_provider.strip()
+
+    if llm_key and llm_key.strip():
+        Settings.LLM_API_KEY = llm_key.strip()
+        os.environ["LLM_API_KEY"] = llm_key.strip()
+
+    if llm_base_url and llm_base_url.strip():
+        Settings.LLM_BASE_URL = llm_base_url.strip()
+        os.environ["LLM_BASE_URL"] = llm_base_url.strip()
+
+    if llm_model and llm_model.strip():
+        Settings.LLM_MODEL = llm_model.strip()
+        os.environ["LLM_MODEL"] = llm_model.strip()
+
+    # Bersihkan GROQ_BASE_URL lama jika ada
     if "GROQ_BASE_URL" in os.environ:
         current_base = os.environ.get("GROQ_BASE_URL", "").strip()
         if "api.groq.com" in current_base or current_base.endswith("/openai/v1") or not current_base:
             os.environ.pop("GROQ_BASE_URL", None)
+
 
     run_start_time = time.time()
     run_id = output_dir.name
@@ -220,6 +241,10 @@ def main():
     parser.add_argument("--subtitles", action="store_true", default=True, help="Bakar subtitle hardsub")
     parser.add_argument("--no-subtitles", dest="subtitles", action="store_false")
     parser.add_argument("--groq-key", default=None, help="Groq API Key override")
+    parser.add_argument("--llm-provider", default=None, help="LLM Provider (openai, deepseek, openrouter, groq, custom)")
+    parser.add_argument("--llm-key", default=None, help="LLM API Key override")
+    parser.add_argument("--llm-base-url", default=None, help="LLM Base URL override")
+    parser.add_argument("--llm-model", default=None, help="LLM Model override")
     parser.add_argument("--sample", action="store_true", default=False, help="Gunakan sampel video simulasi")
 
     args = parser.parse_args()
@@ -234,9 +259,14 @@ def main():
         vertical_mode=args.vertical,
         subtitles=args.subtitles,
         groq_api_key=args.groq_key,
+        llm_provider=args.llm_provider,
+        llm_key=args.llm_key,
+        llm_base_url=args.llm_base_url,
+        llm_model=args.llm_model,
         is_sample=args.sample
     )
     sys.exit(exit_code)
+
 
 
 if __name__ == "__main__":

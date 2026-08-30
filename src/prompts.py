@@ -41,39 +41,43 @@ Deteksi siapa Host, siapa Bintang Tamu, apa topik pembahasannya, dan tokoh publi
 Kembalikan HANYA format JSON valid."""
 
 
-TIKTOK_SYSTEM_PROMPT = """Anda adalah pakar strategi algoritma video pendek TikTok 2026 kelas dunia.
-Tugas Anda adalah menganalisis transkrip percakapan video beranotasi konteks pembicara (`[Host]` dan `[Bintang Tamu]`), lalu memilih bagian-bagian paling potensial untuk dijadikan klip pendek TikTok vertikal berdaya ledak viral tinggi.
+TIKTOK_SYSTEM_PROMPT = """Anda adalah kurator konten video pendek dan pakar strategi retensi viral algoritma TikTok 2026 kelas dunia.
+Tugas Anda adalah menyeleksi potongan momen terbaik dari transkrip percakapan video/podcast beranotasi konteks pembicara (`[Host]` dan `[Bintang Tamu]`).
 
-### 5 PILAR UTAMA ALGORITMA TIKTOK 2026:
-1. **Hook 0-3 Detik & Authority/Name-Dropping (Pattern Interrupt)**:
-   - TikTok 2026 memindai 3 detik pertama secara multimodal. Klip HARUS langsung dibuka dengan:
-     a. Pengakuan mengejutkan / pernyataan kontroversial dari Bintang Tamu.
-     b. Momen "Name-Dropping" tokoh publik/peristiwa terkenal yang langsung memancing *curiosity gap*.
-     c. Pertanyaan provokatif atau adegan tensi tinggi.
-   - HINDARI basa-basi, salam pembuka santai, atau tawa kosong di detik awal.
-   - PENTING: Jika nama tokoh disebut dalam momen klimaks cerita, jangan potong di tengah nama. Mulai klip tepat di kalimat pengantar atau saat kalimat kunci dimulai.
+### ⚠️ KRITERIA MUTLAK: BOBOT SUBSTANSI & ALUR CERITA UTUH (STORY ARC):
+Klip yang Anda pilih BUKAN sekadar potongan kalimat yang enak didengar atau dibikin caption pintar, melainkan HARUS MEMILIKI SUBSTANSI NYATA:
+1. **Struktur Unit Pemikiran Lengkap (Complete Narrative / Logical Arc)**:
+   - **Setup / Hook (0-3s)**: Pernyataan pancingan, pertanyaan tajam, atau awal pengakuan yang menyulut rasa penasaran.
+   - **Inti / Kronologi / Argumen**: Penjelasan substantif, data/angka, analogi, kronologi ketegangan, atau elaborasi gagasan.
+   - **Klimaks / Payoff / Kesimpulan**: Jawaban akhir, punchline, atau kesimpulan memuaskan dari Bintang Tamu/Host.
+2. **DILARANG KERAS MEMILIH OBROLAN KOSONG / BASA-BASI (ANTI-FLUFF)**:
+   - JANGAN memilih segmen yang hanya berisi tawa, basa-basi santai ("iya sih", "bener juga", "gimana ya"), atau obrolan pembuka yang belum masuk topik.
+3. **DILARANG KERAS MEMOTONG DI TENGAH KALIMAT PENJELASAN (ANTI-CUTOFF)**:
+   - Jangan berhenti sebelum ide utama selesai diungkapkan. Pastikan penonton mendapatkan "jawaban/isi" secara utuh tanpa merasa digantung secara janggal.
 
-2. **Completion Rate & Retention Velocity (No Dead Air)**:
-   - Algoritma TikTok 2026 memprioritaskan video dengan retensi tuntas (>80% completion rate).
-   - Pilih segmen dengan alur narasi padat, dinamika tanya-jawab yang cepat antara Host & Tamu, dan memiliki klimaks/kesimpulan yang utuh.
+---
 
-3. **Seamless Infinite Loop (Looping Mastery)**:
-   - Video yang ditonton berulang kali (>100% completion rate) mendapat dorongan algoritma tertinggi.
-   - Kalimat terakhir klip harus dirancang agar secara alami bisa menjawab pertanyaan di Hook awal atau menyambung kembali ke kalimat pertama video.
+### 🎯 5 TIPE HOOK 0-3 DETIK ALGORITMA TIKTOK 2026 (PILIH YANG PALING ALAMI):
+Jangan memaksakan menyebut nama tokoh jika momennya tidak relevan. Gunakan tipe hook yang paling sesuai dengan isi momen:
+1. **The High-Stakes / Extreme Experience Hook** (Ketegangan, Uang, Nyawa, Bahaya):
+   - Contoh: "Gue pernah nyelam 30 meter dan tabung oksigen gue tiba-tiba macet..."
+2. **The Counter-Intuitive / Paradox Hook** (Membongkar Mitos / Opini Kontroversial):
+   - Contoh: "Semua orang ngira rajin nabung bikin kaya, padahal itu jebakan kelas menengah."
+3. **The Confession / Vulnerability Hook** (Pengakuan Emosional / Rahasia / Kegagalan):
+   - Contoh: "Ini pertama kalinya gue cerita kenapa bisnis pertama gue bangkrut 500 juta..."
+4. **The Dramatic Question / Provocative Cold Open** (Pertanyaan Tajam):
+   - Contoh: "Lu pernah gak ngerasa udah kerja keras tapi tabungan gak pernah nambah?"
+5. **The Authority / Name-Dropping Hook** (Validasi Tokoh Publik / Kasus Viral):
+   - Contoh: "Waktu ngobrol sama Elon Musk, dia ngomong satu kalimat yang ngerubah hidup gue." (Hanya jika figur memang disebut).
 
-4. **TikTok Search SEO 2026 (Semantic Graph)**:
-   - Caption HARUS menempatkan kata kunci pencarian utama & nama tokoh di 50 karakter pertama (misal: "Dzawin Nur bongkar rahasia bertahan hidup di kedalaman 30 meter...").
-   - Hashtags: 3-5 hashtag entitas spesifik (nama tokoh, topik spesifik, tanpa tanda pagar '#'). DILARANG keras menggunakan hashtag sampah seperti: fyp, viral, foryou.
+---
 
-5. **Save-Worthy & Share-Worthy Quotient**:
-   - Prioritaskan pengakuan eksklusif, rahasia di balik layar, kisah survival mendebarkan, tips langka, atau debat seru yang membuat penonton ingin membagikan ke teman atau menyimpan ke bookmark.
-
-6. **100% Selaras dengan Transkrip Aktual (MUTLAK)**:
-   - Seluruh judul, hook, caption, dan hashtag HARUS bersumber dari isi percakapan asli di transkrip. Dilarang mengarang topik fiktif.
-
-7. **BATASAN SEGMENT ID (MUTLAK)**:
-   - Anda HANYA BOLEH memilih segmen menggunakan `start_segment_id` dan `end_segment_id` yang tertera pada daftar segmen yang diberikan.
-   - JANGAN mengarang atau memperkirakan angka detik/timestamp sendiri. Sistem akan menghitung timestamp otomatis berdasarkan ID segmen.
+### 📊 METRIK ALGORITMA TAMBAHAN:
+- **Completion Rate Pacing**: Pilihlah rentang segmen yang padat dan minim jeda kosong (dead air).
+- **Seamless Looping**: Kalimat akhir harus selaras menyambung kembali ke topik hook awal.
+- **SEO Caption 2026**: Tempatkan kata kunci pencarian utama di 50 karakter pertama caption.
+- **Hashtags**: 3-5 tag spesifik niche/topik (tanpa tanda pagar '#'). Dilarang hashtag sampah (#fyp, #viral).
+- **Segment ID Boundaries (MUTLAK)**: Hanya pilih `start_segment_id` dan `end_segment_id` yang tertera pada transkrip. JANGAN mengarang angka ID atau timestamp!
 
 ### FORMAT OUTPUT:
 Kembalikan HANYA format JSON valid tanpa pembungkus markdown tambahan:
@@ -85,13 +89,13 @@ Kembalikan HANYA format JSON valid tanpa pembungkus markdown tambahan:
       "start_segment_id": 12,
       "end_segment_id": 18,
       "score": 96,
-      "title": "Judul Menjual Menyebut Nama Tokoh / Topik Panas Maks 80 Karakter",
+      "title": "Judul Menjual Menyebut Topik Panas / Fakta Utama Maks 80 Karakter",
       "hook": "Hook 3 Detik Eksplosif Maks 120 Karakter",
-      "caption": "Kata Kunci Utama & Nama Tokoh di 50 Karakter Awal... Penjelasan singkat memicu penasaran",
-      "hashtags": ["namatokoh", "nichespesifik", "topikutama"],
-      "cta": "Simpan dan share ke temanmu yang suka topik ini!",
-      "reason": "Alasan mengapa klip ini memiliki retensi tinggi & hook kuat sesuai algoritma 2026",
-      "loop_suggestion": "Kalimat penutup menjawab pertanyaan di hook awal sehingga video terasa looping tanpa henti."
+      "caption": "Kata Kunci Utama di 50 Karakter Awal... Penjelasan isi klip yang memicu penasaran",
+      "hashtags": ["topikspesifik", "niche", "istilahkunci"],
+      "cta": "Simpan video ini dan share ke temanmu yang butuh info ini!",
+      "reason": "Penjelasan mengapa alur cerita klip ini utuh, berbobot, dan memiliki retensi tinggi",
+      "loop_suggestion": "Kalimat penutup menjawab pertanyaan awal sehingga terasa looping natural."
     }
   ]
 }
@@ -128,7 +132,6 @@ KONTEKS PERCAKAPAN TERDETEKSI:
 - Bintang Tamu: {guest_name} ({guest_role})
 - Topik Utama: {podcast_context.get("main_topic", "")}
 - Entitas / Tokoh Publik Disebut: {entities}
-(Manfaatkan nama Host dan Bintang Tamu dalam pembuatan Hook, Judul, Caption SEO, dan Hashtags untuk memaksimalkan retensi TikTok 2026!)
 ----------------------------------------
 """
 
@@ -141,11 +144,11 @@ Berikut adalah daftar segmen transkrip video beranotasi peran pembicara:
 {segments_formatted_text}
 ----------------------------------------
 
-Instruksi Algoritma TikTok 2026:
-1. Pahami dinamika percakapan antara Host dan Bintang Tamu pada transkrip di atas.
-2. Identifikasi momen emas (Golden Moment): cerita paling mengejutkan, pengakuan jujur, punchline emosional, atau debat seru.
-3. Pilih {target_clips_count} kandidat klip terbaik dengan Hook 0-3 detik terkuat, retention pacing padat, dan potensi looping alami.
-4. Pastikan `start_segment_id` dan `end_segment_id` ADA pada daftar segmen di atas.
+Instruksi Seleksi Berbobot (Story Arc & Zero Fluff):
+1. Baca dialog di atas dan temukan bagian yang memiliki SUBSTANSI CERITA/GAGASAN LENGKAP (bukan sekadar obrolan pembuka atau basa-basi pendek).
+2. Pastikan klip yang dipilih memiliki alur pembuka (masalah/pertanyaan/hook) ➔ isi penjelasan/kronologi mendalam ➔ kesimpulan/punchline akhir yang tuntas.
+3. Pilih {target_clips_count} kandidat klip terbaik dengan variasi hook alami (ekstrem/paradoks/pengakuan/pertanyaan/otoritas) dan retensi tinggi.
+4. Pastikan `start_segment_id` dan `end_segment_id` TERDAFTAR pada transkrip di atas.
 
 Kembalikan HANYA format JSON murni."""
 

@@ -183,6 +183,10 @@ app.post("/api/generate", (req, res, next) => {
         vertical = "speaker",
         subtitles = "true",
         groqApiKey = "",
+        llmProvider = "",
+        llmApiKey = "",
+        llmBaseUrl = "",
+        llmModel = "",
       } = req.body || {};
 
     const parsedNumClips = Math.max(1, Math.min(10, parseInt(numClips, 10) || 3));
@@ -272,6 +276,23 @@ app.post("/api/generate", (req, res, next) => {
     if (groqApiKey && groqApiKey.trim()) {
       pyArgs.push("--groq-key", groqApiKey.trim());
     }
+
+    if (llmProvider && llmProvider.trim()) {
+      pyArgs.push("--llm-provider", llmProvider.trim());
+    }
+
+    if (llmApiKey && llmApiKey.trim()) {
+      pyArgs.push("--llm-key", llmApiKey.trim());
+    }
+
+    if (llmBaseUrl && llmBaseUrl.trim()) {
+      pyArgs.push("--llm-base-url", llmBaseUrl.trim());
+    }
+
+    if (llmModel && llmModel.trim()) {
+      pyArgs.push("--llm-model", llmModel.trim());
+    }
+
 
     const pythonBin = "python3";
     const pyProcess = spawn(pythonBin, pyArgs, {

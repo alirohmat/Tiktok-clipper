@@ -7,9 +7,10 @@ dan memvalidasi batasan waktu serta menghilangkan tumpang tindih klip.
 import json
 import re
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
-from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from src.config import Settings
 from src.models import (
     ClipAnalysisResult,
@@ -29,8 +30,142 @@ from src.prompts import (
 from src.utils import calculate_file_hash, get_cache, logger, sanitize_filename, save_cache
 
 
+def _call_universal_llm(
+    system_prompt: str,
+    user_prompt: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Memanggil LLM (OpenAI, DeepSeek, OpenRouter, Groq, atau OpenAI-compatible endpoint lainnya).
+    Menggunakan retry dan fallback yang tangguh.
+    """
+    provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
+
+    if not api_key:
+        return None, "API Key LLM belum dikonfigurasi. Silakan masukkan OpenAI API Key atau Groq API Key."
+
+    logger.info(f"Mengirim analisis ke LLM [Provider: {provider} | Model: {model}]...")
+
+    # Strategi 1: Jika provider adalah groq dan tidak ada custom base_url, gunakan Groq SDK jika tersedia
+    if provider == "groq" and not base_url:
+        try:
+            from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
+            client = Groq(api_key=api_key)
+            for attempt in range(3):
+                try:
+                    chat_completion = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.2,
+                        response_format={"type": "json_object"}
+                    )
+                    content = chat_completion.choices[0].message.content
+                    time.sleep(1.5)
+                    return content, None
+                except RateLimitError:
+                    wait_s = (attempt + 1) * 3
+                    logger.warning(f"Groq Rate Limit (429). Menunggu {wait_s}s...")
+                    time.sleep(wait_s)
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    time.sleep(2)
+        except ImportError:
+            pass
+        except Exception as ex:
+            logger.warning(f"Groq SDK call error: {ex}, beralih ke HTTP fallback...")
+
+    # Strategi 2: Jika OpenAI SDK terpasang, gunakan OpenAI client
+    try:
+        from openai import OpenAI
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url.rstrip("/")
+        client = OpenAI(**client_kwargs)
+
+        for attempt in range(3):
+            try:
+                # Coba dengan json_object response format
+                try:
+                    chat_completion = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.2,
+                        response_format={"type": "json_object"}
+                    )
+                except Exception:
+                    # Beberapa model mungkin belum support response_format json_object, fallback ke standard
+                    chat_completion = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.2
+                    )
+                content = chat_completion.choices[0].message.content
+                return content, None
+            except Exception as e:
+                err_str = str(e)
+                if "rate" in err_str.lower() or "429" in err_str:
+                    time.sleep((attempt + 1) * 3)
+                    continue
+                if attempt == 2:
+                    return None, f"OpenAI/LLM Error: {err_str[:250]}"
+                time.sleep(2)
+    except ImportError:
+        pass
+    except Exception as ex:
+        logger.warning(f"OpenAI SDK error: {ex}, mencoba HTTP request langsung...")
+
+    # Strategi 3: Universal HTTP REST call ke standard /chat/completions
+    endpoint = f"{base_url.rstrip('/')}/chat/completions" if base_url else "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.2
+    }
+
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                content = data["choices"][0]["message"]["content"]
+                return content, None
+        except urllib.error.HTTPError as he:
+            err_body = he.read().decode("utf-8", errors="ignore")
+            logger.error(f"LLM HTTP Error {he.code}: {err_body[:200]}")
+            if he.code == 429:
+                time.sleep((attempt + 1) * 4)
+                continue
+            return None, f"LLM API Error ({he.code}): {err_body[:200]}"
+        except Exception as ex:
+            if attempt == 2:
+                return None, f"Gagal memanggil LLM Endpoint: {str(ex)}"
+            time.sleep(2)
+
+    return None, "Gagal mendapatkan respons LLM setelah beberapa kali mencoba."
+
+
 def detect_podcast_context(
-    client: Groq,
     transcript: TranscriptData
 ) -> Optional[PodcastContext]:
     """
@@ -58,11 +193,9 @@ def detect_podcast_context(
     user_prompt = build_context_detection_prompt(intro_text)
     
     logger.info("Menjalankan Auto-Context Speaker Detection pada bagian pembuka video...")
-    resp_text, err = _call_groq_llm(
-        client=client,
+    resp_text, err = _call_universal_llm(
         system_prompt=PODCAST_CONTEXT_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        model=Settings.GROQ_LLM_MODEL
+        user_prompt=user_prompt
     )
 
     if err or not resp_text:
@@ -151,52 +284,7 @@ def format_segments_for_llm(
     return "\n".join(lines)
 
 
-def _call_groq_llm(
-    client: Groq,
-    system_prompt: str,
-    user_prompt: str,
-    model: str
-) -> Tuple[Optional[str], Optional[str]]:
-    """Memanggil Groq LLM dengan penanganan rate limit dan backoff."""
-    max_retries = 3
-    backoff_delays = [2, 4, 8]
-
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Mengirim permintaan analisis ke Groq LLM ({model})...")
-            chat_completion = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
-            content = chat_completion.choices[0].message.content
-            # Jeda 2 detik untuk keamanan rate limit gratis
-            time.sleep(2)
-            return content, None
-
-        except RateLimitError:
-            delay = backoff_delays[attempt] if attempt < len(backoff_delays) else 10
-            logger.warning(f"Groq Rate Limit tercapai. Menunggu {delay}s (Percobaan {attempt + 1}/{max_retries})...")
-            if attempt == max_retries - 1:
-                return None, "Batas laju Groq API (Rate Limit 429) tercapai. Silakan coba lagi beberapa saat."
-            time.sleep(delay)
-
-        except (APIConnectionError, APIStatusError) as e:
-            logger.error(f"Groq API Error: {e}")
-            return None, f"Gagal menghubungi Groq LLM API: {str(e)[:200]}"
-        except Exception as ex:
-            logger.exception("Error tak terduga saat memanggil Groq LLM")
-            return None, f"Kesalahan analisis Groq: {str(ex)}"
-
-    return None, "Gagal mendapatkan respons LLM setelah beberapa kali mencoba."
-
-
-def analyze_chunk_with_groq(
-    client: Groq,
+def analyze_chunk_with_llm(
     chunk: List[Segment],
     niche: str,
     min_dur: int,
@@ -204,7 +292,7 @@ def analyze_chunk_with_groq(
     clips_per_chunk: int,
     podcast_context: Optional[PodcastContext] = None
 ) -> Tuple[List[ClipCandidate], Optional[str]]:
-    """Menganalisis satu chunk segmen dengan Groq LLM dan memvalidasi JSON."""
+    """Menganalisis satu chunk segmen dengan Universal LLM dan memvalidasi JSON."""
     formatted_text = format_segments_for_llm(chunk, podcast_context)
     user_prompt = build_analysis_user_prompt(
         segments_formatted_text=formatted_text,
@@ -215,11 +303,9 @@ def analyze_chunk_with_groq(
         podcast_context=podcast_context.model_dump() if podcast_context else None
     )
 
-    response_text, error = _call_groq_llm(
-        client=client,
+    response_text, error = _call_universal_llm(
         system_prompt=TIKTOK_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        model=Settings.GROQ_LLM_MODEL
+        user_prompt=user_prompt
     )
 
     if error or not response_text:
@@ -244,11 +330,9 @@ def analyze_chunk_with_groq(
         logger.warning(f"JSON pertama tidak valid ({parse_err}). Mencoba repair 1x...")
         # Percobaan perbaikan (Retry 1x dengan prompt repair)
         repair_prompt = build_json_repair_prompt(clean_text, str(parse_err))
-        fixed_text, repair_err = _call_groq_llm(
-            client=client,
+        fixed_text, repair_err = _call_universal_llm(
             system_prompt=TIKTOK_SYSTEM_PROMPT,
-            user_prompt=repair_prompt,
-            model=Settings.GROQ_LLM_MODEL
+            user_prompt=repair_prompt
         )
         if fixed_text:
             try:
@@ -268,6 +352,7 @@ def analyze_chunk_with_groq(
                 logger.error(f"Repair JSON tetap gagal: {e2}")
 
         return [], f"Output LLM bukan format JSON yang valid: {str(parse_err)}"
+
 
 
 def validate_and_filter_clips(
@@ -405,8 +490,10 @@ def analyze_transcript(
     if progress_callback:
         progress_callback("Memeriksa konfigurasi AI & mendeteksi figur publik...", 50)
 
-    if not Settings.GROQ_API_KEY:
-        logger.warning("GROQ_API_KEY tidak diisi, menggunakan analisis berbasis segmen audio aktual...")
+    provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
+
+    if not api_key:
+        logger.warning("API Key LLM tidak ditemukan, menggunakan analisis berbasis segmen audio aktual...")
         if progress_callback:
             progress_callback("Mode offline: Menyeleksi segmen audio paling padat...", 55)
 
@@ -461,19 +548,17 @@ def analyze_transcript(
         )
         return validated, None
 
-    client = Settings.get_groq_client()
-
     # Step 1: Auto-Context Speaker Detection (Host, Tamu & Entity)
     if progress_callback:
         progress_callback("🎯 Menjalankan Auto-Context Speaker Detection (Mendeteksi Host & Tamu)...", 52)
     
-    podcast_context = detect_podcast_context(client, transcript)
+    podcast_context = detect_podcast_context(transcript)
     if podcast_context and progress_callback:
         guest_str = f"{podcast_context.guest} ({podcast_context.guest_role})" if podcast_context.guest_role else podcast_context.guest
         progress_callback(f"👤 Terdeteksi: Host: '{podcast_context.host}' | Tamu: '{guest_str}'", 54)
 
     # Periksa cache analisis
-    cache_str = f"{transcript.text[:1000]}_{len(transcript.segments)}_{niche}_{min_duration}_{max_duration}_{num_clips}_{podcast_context.guest if podcast_context else ''}"
+    cache_str = f"{transcript.text[:1000]}_{len(transcript.segments)}_{niche}_{min_duration}_{max_duration}_{num_clips}_{model}_{podcast_context.guest if podcast_context else ''}"
     import hashlib
     analysis_hash = hashlib.sha256(cache_str.encode("utf-8")).hexdigest()
     
@@ -499,13 +584,12 @@ def analyze_transcript(
 
     for i, chunk in enumerate(chunks, start=1):
         percent_now = 55 + int((i / len(chunks)) * 14)
-        msg = f"🧠 Menganalisis babak {i}/{len(chunks)} (Hook 0-3s, Retensi, & Potensi Loop)..."
+        msg = f"🧠 Menganalisis babak {i}/{len(chunks)} via {provider.upper()} ({model}) [Story Arc & Substansi]..."
         logger.info(msg)
         if progress_callback:
             progress_callback(msg, percent_now)
 
-        candidates, err = analyze_chunk_with_groq(
-            client=client,
+        candidates, err = analyze_chunk_with_llm(
             chunk=chunk,
             niche=niche,
             min_dur=min_duration,
@@ -558,3 +642,4 @@ def analyze_transcript(
             }, f, ensure_ascii=False, indent=2)
 
     return validated_clips, None
+

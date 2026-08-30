@@ -136,10 +136,8 @@ def render_single_clip(
         f.write(srt_content)
     clip.output_srt_path = str(srt_out)
 
-    # 2. Rancang rantai video filter (VF)
-    vf_filters: List[str] = []
-
-    # Filter Vertikal
+    # 2. Rancang rantai video filter
+    # Deteksi apakah filter vertikal berupa filter complex multi-stream (seperti split atas-bawah podcast)
     v_filter = build_vertical_filter(
         vertical_mode=vertical_mode,
         probe=probe,
@@ -147,8 +145,6 @@ def render_single_clip(
         start_time=clip.start_time,
         duration=clip.duration
     )
-    if v_filter:
-        vf_filters.append(v_filter)
 
     # Filter Subtitle (Hardsub) jika diminta
     subtitle_filter = None
@@ -159,10 +155,7 @@ def render_single_clip(
             f"'FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=45'"
         )
 
-    # Percobaan 1: Render dengan semua filter lengkap (termasuk subtitle jika aktif)
-    filters_to_try = list(vf_filters)
-    if subtitle_filter:
-        filters_to_try.append(subtitle_filter)
+    is_complex_filter = bool(v_filter and (";" in v_filter or "split=" in v_filter or "[0:v]" in v_filter))
 
     success = False
     error_msg = None
@@ -177,44 +170,104 @@ def render_single_clip(
         "-t", str(clip.duration),
     ]
 
-    # Coba eksekusi render
-    if filters_to_try:
-        vf_string = ",".join(filters_to_try)
-        cmd_full = cmd_base + [
-            "-vf", vf_string,
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "20",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            str(video_out)
-        ]
-        try:
-            logger.info(f"Merender klip {clip.index}: {clip.title} (dengan filter)...")
-            res = subprocess.run(cmd_full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            success = True
-            subtitles_burned = bool(subtitle_filter)
-        except Exception as e:
-            logger.warning(f"Render klip {clip.index} dengan hardsub/filter gagal, mencoba fallback: {e}")
+    # Percobaan 1: Render dengan filter lengkap (Complex atau Simple)
+    try:
+        if is_complex_filter:
+            # Rangkai filter complex: sambungkan vstack dengan filter subtitle jika aktif
+            if subtitle_filter:
+                # Ganti output tag [v_out] menjadi intermediate [v_stacked], lalu aplikasikan subtitle
+                complex_graph = v_filter.replace("[v_out]", "[v_stacked]")
+                complex_graph += f";[v_stacked]{subtitle_filter}[v_out]"
+            else:
+                complex_graph = v_filter
+
+            cmd_full = cmd_base + [
+                "-filter_complex", complex_graph,
+                "-map", "[v_out]",
+                "-map", "0:a?",
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "20",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                "-pix_fmt", "yuv420p",
+                str(video_out)
+            ]
+        else:
+            simple_filters = []
+            if v_filter:
+                simple_filters.append(v_filter)
+            if subtitle_filter:
+                simple_filters.append(subtitle_filter)
+
+            if simple_filters:
+                cmd_full = cmd_base + [
+                    "-vf", ",".join(simple_filters),
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "20",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-movflags", "+faststart",
+                    "-pix_fmt", "yuv420p",
+                    str(video_out)
+                ]
+            else:
+                cmd_full = cmd_base + [
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "20",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-movflags", "+faststart",
+                    "-pix_fmt", "yuv420p",
+                    str(video_out)
+                ]
+
+        logger.info(f"Merender klip {clip.index}: {clip.title} (dengan filter & normalisasi audio)...")
+        subprocess.run(cmd_full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        success = True
+        subtitles_burned = bool(subtitle_filter)
+
+    except Exception as e:
+        logger.warning(f"Render klip {clip.index} dengan filter penuh gagal, mencoba fallback: {e}")
 
     # Percobaan 2: Fallback hanya filter vertikal tanpa subtitle
     if not success and v_filter:
-        cmd_vonly = cmd_base + [
-            "-vf", v_filter,
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "20",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            str(video_out)
-        ]
         try:
+            if is_complex_filter:
+                cmd_vonly = cmd_base + [
+                    "-filter_complex", v_filter,
+                    "-map", "[v_out]",
+                    "-map", "0:a?",
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "20",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-movflags", "+faststart",
+                    "-pix_fmt", "yuv420p",
+                    str(video_out)
+                ]
+            else:
+                cmd_vonly = cmd_base + [
+                    "-vf", v_filter,
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "20",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-movflags", "+faststart",
+                    "-pix_fmt", "yuv420p",
+                    str(video_out)
+                ]
+
             logger.info(f"Merender klip {clip.index} (fallback vertikal tanpa hardsub)...")
             subprocess.run(cmd_vonly, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
             success = True
@@ -246,6 +299,7 @@ def render_single_clip(
         except Exception as ex:
             error_msg = f"Error tak terduga saat render klip {clip.index}: {str(ex)}"
             logger.error(error_msg)
+
 
     clip.render_success = success
     clip.subtitles_burned = subtitles_burned

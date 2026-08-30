@@ -67,9 +67,14 @@ export default function App() {
   const [minDur, setMinDur] = useState(15);
   const [maxDur, setMaxDur] = useState(60);
   const [subtitles, setSubtitles] = useState(true);
-  const [vertical, setVertical] = useState<PortraitCropMode>("speaker");
+  const [vertical, setVertical] = useState<PortraitCropMode>("auto");
   const [groqApiKey, setGroqApiKey] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<string>("auto");
+  const [llmApiKey, setLlmApiKey] = useState<string>("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState<string>("");
+  const [llmModel, setLlmModel] = useState<string>("");
+
 
   // Generation & Active Job State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -209,6 +214,19 @@ export default function App() {
       if (groqApiKey.trim()) {
         formData.append("groqApiKey", groqApiKey.trim());
       }
+      if (llmProvider && llmProvider !== "auto") {
+        formData.append("llmProvider", llmProvider);
+      }
+      if (llmApiKey.trim()) {
+        formData.append("llmApiKey", llmApiKey.trim());
+      }
+      if (llmBaseUrl.trim()) {
+        formData.append("llmBaseUrl", llmBaseUrl.trim());
+      }
+      if (llmModel.trim()) {
+        formData.append("llmModel", llmModel.trim());
+      }
+
 
       if (sourceType === "upload") {
         if (!selectedFile) {
@@ -692,39 +710,122 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Groq API Key Config Toggle (Untuk Transkripsi Whisper Akurat) */}
-                <div className="pt-1">
+                {/* Pengaturan Model AI (Universal LLM & Whisper) */}
+                <div className="pt-2">
                   <div className="flex items-center justify-between">
                     <button
                       type="button"
                       onClick={() => setShowKeyInput(!showKeyInput)}
-                      className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition-colors"
+                      className="text-xs text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors font-semibold"
                     >
-                      <Key className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>{showKeyInput ? "Tutup Pengaturan Groq API Key" : "Atur Groq API Key (Opsional / Override)"}</span>
+                      <Cpu className="w-4 h-4 text-cyan-400" />
+                      <span>{showKeyInput ? "Sembunyikan Pengaturan AI & LLM" : "Konfigurasi Provider AI & LLM (OpenAI, DeepSeek, Groq, dll.)"}</span>
                     </button>
-                    <span className="text-[11px] text-slate-500">
-                      {systemStatus?.groq_key_set ? "✅ API Key Aktif di Server" : "⚠️ Whisper Memerlukan API Key"}
+                    <span className="text-[11px] text-pink-400 font-medium">
+                      {llmProvider !== "auto" ? `Provider: ${llmProvider.toUpperCase()}` : "Provider: Auto-Detect"}
                     </span>
                   </div>
 
                   {showKeyInput && (
-                    <div className="mt-2 p-3 bg-slate-950/90 border border-slate-800 rounded-xl space-y-2">
-                      <div className="flex items-center gap-2">
+                    <div className="mt-2 p-3.5 bg-slate-950/90 border border-slate-800 rounded-2xl space-y-3.5 shadow-inner">
+                      {/* LLM Provider Selection */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+                          <span>Pilih LLM Provider untuk Kurasi Cerita & Hook TikTok 2026:</span>
+                        </label>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {[
+                            { id: "auto", label: "Auto Server", badge: "Default" },
+                            { id: "openai", label: "OpenAI", badge: "GPT-4o" },
+                            { id: "deepseek", label: "DeepSeek", badge: "V3 / R1" },
+                            { id: "openrouter", label: "OpenRouter", badge: "Universal" },
+                            { id: "groq", label: "Groq", badge: "Llama 3.3" },
+                            { id: "custom", label: "Custom API", badge: "OpenAI-Comp" },
+                          ].map((p) => (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                setLlmProvider(p.id);
+                                if (p.id === "openai" && !llmModel) setLlmModel("gpt-4o-mini");
+                                if (p.id === "deepseek" && !llmModel) setLlmModel("deepseek-chat");
+                                if (p.id === "openrouter" && !llmModel) setLlmModel("deepseek/deepseek-chat");
+                                if (p.id === "groq" && !llmModel) setLlmModel("llama-3.3-70b-versatile");
+                              }}
+                              className={`p-2 rounded-xl border text-left text-xs transition-all ${
+                                llmProvider === p.id
+                                  ? "bg-pink-500/20 border-pink-500 text-white font-bold"
+                                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                              }`}
+                            >
+                              <div className="font-semibold text-slate-200">{p.label}</div>
+                              <div className="text-[10px] text-pink-400">{p.badge}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* API Key & Custom URL */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-300">
+                            LLM API Key ({llmProvider === "auto" ? "Opsional" : llmProvider.toUpperCase()})
+                          </label>
+                          <input
+                            type="password"
+                            value={llmApiKey}
+                            onChange={(e) => setLlmApiKey(e.target.value)}
+                            placeholder={llmProvider === "openai" ? "sk-..." : llmProvider === "deepseek" ? "sk-..." : "API Key..."}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-300">Model Name (e.g. gpt-4o, deepseek-chat)</label>
+                          <input
+                            type="text"
+                            value={llmModel}
+                            onChange={(e) => setLlmModel(e.target.value)}
+                            placeholder={llmProvider === "deepseek" ? "deepseek-chat" : llmProvider === "openai" ? "gpt-4o" : "Nama model..."}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
+                          />
+                        </div>
+
+                        {(llmProvider === "custom" || llmProvider === "openrouter" || llmBaseUrl) && (
+                          <div className="space-y-1 sm:col-span-2">
+                            <label className="text-[11px] font-medium text-slate-300">Custom Base URL (OpenAI-compatible endpoint)</label>
+                            <input
+                              type="text"
+                              value={llmBaseUrl}
+                              onChange={(e) => setLlmBaseUrl(e.target.value)}
+                              placeholder="https://api.openai.com/v1 atau http://localhost:11434/v1"
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-pink-500"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Whisper Groq Key for Audio */}
+                      <div className="pt-1 border-t border-slate-800 space-y-1">
+                        <label className="text-[11px] font-medium text-slate-300 flex items-center justify-between">
+                          <span>Groq API Key (Untuk Transkripsi Whisper Audio Kilat ~2 detik)</span>
+                          <span className="text-[10px] text-cyan-400">
+                            {systemStatus?.groq_key_set ? "✅ Server Default Ready" : "Opsional"}
+                          </span>
+                        </label>
                         <input
                           type="password"
                           value={groqApiKey}
                           onChange={(e) => setGroqApiKey(e.target.value)}
                           placeholder="gsk_..."
-                          className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-400"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-cyan-400"
                         />
                       </div>
-                      <p className="text-[11px] text-slate-400 leading-relaxed">
-                        💡 <strong>Groq API Key</strong> digunakan oleh Whisper untuk mentranskripsikan kata-demi-kata dari audio video secara 100% akurat dan cepat (~2 detik). Anda bisa mendapatkan key gratis di <em>console.groq.com</em>.
-                      </p>
                     </div>
                   )}
                 </div>
+
 
                 {/* Error Banner */}
                 {errorMessage && (

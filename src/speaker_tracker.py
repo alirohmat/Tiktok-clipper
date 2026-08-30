@@ -166,12 +166,27 @@ def detect_speakers_in_clip(
             weighted_cx = sum(cx for _, cx, _ in detected_face_centers) / len(detected_face_centers)
 
         # Deteksi podcast 2 orang (apabila ada klaster jelas di kiri dan kanan)
-        has_left = len(left_speaker_faces) >= 3
-        has_right = len(right_speaker_faces) >= 3
+        has_left = len(left_speaker_faces) >= 2
+        has_right = len(right_speaker_faces) >= 2
         is_split = has_left and has_right
 
         left_avg = float(np.median(left_speaker_faces)) if left_speaker_faces else 0.25
         right_avg = float(np.median(right_speaker_faces)) if right_speaker_faces else 0.75
+
+        # Jika ada cross-talk tapi mode single-cam dipilih, pilih cluster yang memiliki total bobot terbesar
+        # agar kamera stabil dan TIDAK melompat-lompat bolak-balik di tengah-tengah
+        if is_split:
+            left_weight = sum(w for _, cx, w in detected_face_centers if cx < 0.5)
+            right_weight = sum(w for _, cx, w in detected_face_centers if cx >= 0.5)
+            # Stabilkan pilihan pembicara utama untuk single tracking
+            if left_weight >= right_weight * 1.2:
+                weighted_cx = left_avg
+            elif right_weight >= left_weight * 1.2:
+                weighted_cx = right_avg
+            else:
+                # Jika sama-sama aktif, gunakan pembicara utama dengan bobot tertinggi
+                dominant_face = max(detected_face_centers, key=lambda item: item[2])
+                weighted_cx = dominant_face[1]
 
         # Batasi posisi X agar aman dalam batas 0.15 - 0.85
         weighted_cx = max(0.18, min(0.82, weighted_cx))
@@ -181,7 +196,7 @@ def detect_speakers_in_clip(
             speakers_detected=2 if is_split else 1,
             speaker_left_x=max(0.15, min(0.45, left_avg)),
             speaker_right_x=max(0.55, min(0.85, right_avg)),
-            confidence=0.85 if len(detected_face_centers) >= 5 else 0.5,
+            confidence=0.85 if len(detected_face_centers) >= 4 else 0.5,
             is_split_recommended=is_split,
             trajectory=[(t, cx) for t, cx, _ in detected_face_centers]
         )
@@ -202,6 +217,7 @@ def generate_speaker_crop_filter(
     """
     Menghasilkan rantai filter video FFmpeg yang mengarahkan fokus crop 9:16 (1080x1920)
     ke wajah pembicara aktif berdasarkan deteksi OpenCV.
+    Jika 2 orang berbicara bersamaan (podcast), menghasilkan Dual-Speaker Split Screen (Atas/Bawah).
     """
     mode = vertical_mode.lower()
 
@@ -220,26 +236,29 @@ def generate_speaker_crop_filter(
     )
 
     # 1. Mode Podcast Split (Dua Pembicara Tumpuk Atas-Bawah)
+    # Otomatis aktif jika mode 'split' atau mode 'auto' saat 2 pembicara terdeteksi
     if (mode in ("split", "speaker_split", "podcast")) or (mode == "auto" and tracking.is_split_recommended):
-        # Bagi layar menjadi 2 crop: Atas fokus Speaker 1 (Kiri), Bawah fokus Speaker 2 (Kanan)
-        # Tiap crop berukuran 1080x960
-        split_crop_w = int(round((video_height * 1080) / 960))  # Aspect 1080:960 = 9:8
+        # Bagi layar menjadi 2 crop: Atas fokus Speaker 1 (Kiri/Host), Bawah fokus Speaker 2 (Kanan/Tamu)
+        # Tiap crop berukuran 1080x960 (rasio 9:8)
+        split_crop_w = int(round((video_height * 1080) / 960))  # Aspect 1080:960
         if split_crop_w % 2 != 0:
             split_crop_w += 1
+        if split_crop_w > video_width:
+            split_crop_w = video_width
         
-        # Koordinat X kiri dan kanan
+        # Koordinat X kiri dan kanan dengan margin aman
         x_left = max(0, min(video_width - split_crop_w, int(tracking.speaker_left_x * video_width - split_crop_w / 2)))
         x_right = max(0, min(video_width - split_crop_w, int(tracking.speaker_right_x * video_width - split_crop_w / 2)))
 
         filter_str = (
             f"[0:v]split=2[v_top_raw][v_bot_raw];"
-            f"[v_top_raw]crop={split_crop_w}:{video_height}:{x_left}:0,scale=1080:960[v_top];"
-            f"[v_bot_raw]crop={split_crop_w}:{video_height}:{x_right}:0,scale=1080:960[v_bot];"
+            f"[v_top_raw]crop={split_crop_w}:{video_height}:{x_left}:0,scale=1080:960:flags=lanczos[v_top];"
+            f"[v_bot_raw]crop={split_crop_w}:{video_height}:{x_right}:0,scale=1080:960:flags=lanczos[v_bot];"
             f"[v_top][v_bot]vstack=inputs=2[v_out]"
         )
         return filter_str
 
-    # 2. Mode Smart Speaker Tracking (Active Face Focus Single-Cam)
+    # 2. Mode Smart Speaker Tracking (Active Face Focus Single-Cam dengan Anti-Jitter)
     # Hitung posisi X crop yang memusatkan wajah pembicara
     face_center_px = int(tracking.dominant_x_ratio * video_width)
     crop_x = int(face_center_px - (target_crop_w / 2))
@@ -249,6 +268,6 @@ def generate_speaker_crop_filter(
     crop_x = max(0, min(max_crop_x, crop_x))
 
     # Skala hasil crop ke 1080x1920 standar TikTok
-    # Gunakan filter crop lalu scale
     filter_str = f"crop={target_crop_w}:{video_height}:{crop_x}:0,scale=1080:1920:flags=lanczos"
     return filter_str
+
