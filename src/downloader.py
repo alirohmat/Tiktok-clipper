@@ -7,12 +7,68 @@ Mendukung ekstraksi cookies otomatis untuk mengatasi proteksi bot/login platform
 
 import os
 import re
+import json
+import shutil
+import hashlib
 import urllib.request
 import urllib.parse
 from pathlib import Path
 from typing import Optional, Tuple
 from src.config import Settings
 from src.utils import logger, console, sanitize_filename
+
+
+def _get_url_cache_dir(url: str) -> Path:
+    """Mendapatkan direktori cache khusus untuk URL berdasarkan hash SHA-256."""
+    clean_key = url.strip()
+    url_hash = hashlib.sha256(clean_key.encode('utf-8')).hexdigest()[:16]
+    cache_dir = Settings.CACHE_DIR / "downloads" / url_hash
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _check_cached_download(url: str) -> Tuple[Optional[Path], Optional[str]]:
+    """Mengecek apakah URL target sudah pernah diunduh dan tersimpan di cache."""
+    cache_dir = _get_url_cache_dir(url)
+    meta_file = cache_dir / "meta.json"
+    cached_videos = [f for f in cache_dir.glob("source_video.*") if f.is_file() and f.stat().st_size > 10240]
+    
+    if cached_videos:
+        video_file = cached_videos[0]
+        title = "cached_video"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                    title = meta.get("title", title)
+            except Exception:
+                pass
+        return video_file, title
+        
+    return None, None
+
+
+def _save_to_download_cache(url: str, downloaded_file: Path, title: str):
+    """Menyimpan berkas video dan metadata ke persistent cache."""
+    try:
+        cache_dir = _get_url_cache_dir(url)
+        target_cache_file = cache_dir / f"source_video{downloaded_file.suffix}"
+        
+        # Salin jika lokasi berbeda
+        if downloaded_file.resolve() != target_cache_file.resolve():
+            shutil.copy2(downloaded_file, target_cache_file)
+            
+        meta_file = cache_dir / "meta.json"
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "url": url,
+                "title": title,
+                "filename": target_cache_file.name,
+                "file_size": target_cache_file.stat().st_size
+            }, f, indent=2)
+        logger.info(f"💾 Video berhasil disimpan ke cache unduhan: {target_cache_file.name} ({target_cache_file.stat().st_size / (1024*1024):.1f} MB)")
+    except Exception as e:
+        logger.warning(f"Gagal menyimpan video ke cache unduhan: {e}")
 
 
 def _find_available_cookies_file() -> Optional[Path]:
@@ -181,6 +237,7 @@ def _download_direct_http_file(url: str, output_path: Path) -> Tuple[Optional[Pa
 def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
     """
     Mengunduh video dari URL (Direct File Link, Cloud Storage, atau platform seperti YouTube/TikTok).
+    Menggunakan cache lokal agar link yang sama tidak diunduh ulang (anti-spam / anti rate-limit).
     
     Args:
         url: Tautan video target (Direct MP4, YouTube, TikTok, Google Drive, Dropbox, dll)
@@ -190,6 +247,22 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
         Tuple (path_video_terunduh, judul_video, pesan_error)
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 0. Anti-Spam Check: Cek apakah URL sudah ada di cache lokal
+    cached_video, cached_title = _check_cached_download(url)
+    if cached_video and cached_video.is_file():
+        target_in_run = output_dir / f"source_video{cached_video.suffix}"
+        try:
+            if target_in_run.resolve() != cached_video.resolve():
+                shutil.copy2(cached_video, target_in_run)
+            logger.info(
+                f"⚡ Video ditemukan di cache lokal! Menggunakan file cache ({cached_video.name}) "
+                f"tanpa mengunduh ulang untuk mencegah spam dan menghemat kuota."
+            )
+            return target_in_run, cached_title or "cached_video", None
+        except Exception as e:
+            logger.warning(f"Gagal menyalin dari cache ({e}), melanjutkan proses unduh...")
+
     out_template = str(output_dir / "source_video.%(ext)s")
     direct_target = output_dir / "source_video.mp4"
     
@@ -197,6 +270,7 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
     if _is_direct_video_url(url):
         dl_path, title, err = _download_direct_http_file(url, direct_target)
         if dl_path and not err:
+            _save_to_download_cache(url, dl_path, title or "direct_video")
             return dl_path, title or "direct_video", None
 
     # 2. Gunakan yt-dlp untuk semua URL streaming & fallback
@@ -256,11 +330,13 @@ def download_video_from_url(url: str, output_dir: Path) -> Tuple[Optional[Path],
             # Cari file hasil unduhan
             expected_mp4 = output_dir / "source_video.mp4"
             if expected_mp4.exists() and expected_mp4.is_file():
+                _save_to_download_cache(url, expected_mp4, video_title)
                 return expected_mp4, video_title, None
                 
             # Jika format lain terdownload (misal mkv/webm), cari file pertama di folder
             downloaded_files = [f for f in output_dir.glob("source_video.*") if f.is_file()]
             if downloaded_files:
+                _save_to_download_cache(url, downloaded_files[0], video_title)
                 return downloaded_files[0], video_title, None
                 
             return None, video_title, "File video tidak ditemukan setelah proses unduhan selesai."

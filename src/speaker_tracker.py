@@ -1,13 +1,15 @@
 """
-Modul Smart Speaker Tracker & Face-Detection Crop (9:16)
-Mendeteksi wajah dan pembicara aktif menggunakan OpenCV (Haar Cascade & Motion Analysis),
-kemudian menghasilkan filter FFmpeg untuk memotong video landscape secara dinamis
-mengikuti posisi pembicara (Active Speaker Tracking / Dual-Speaker Podcast Split).
+Modul Smart Speaker Tracker & Face/Clothing Re-Identification Crop (9:16)
+Mendeteksi wajah dan pembicara aktif menggunakan OpenCV (Haar Cascade, Motion Analysis,
+serta Torso/Shirt Color Histogram Re-Identification).
+Menghasilkan filter FFmpeg dinamis (Time-Based Keyframe Crop) yang otomatis mengikuti
+pembicara ketika angle kamera berubah atau pembicara berpindah tempat.
 """
 
 import math
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
+from dataclasses import dataclass, field
 from src.utils import logger
 
 try:
@@ -16,6 +18,30 @@ try:
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
+
+
+@dataclass
+class CropKeyframe:
+    """Keyframe temporal untuk posisi crop X."""
+    start_t: float
+    end_t: float
+    crop_x_ratio: float  # 0.0 sampai 1.0 (pusat horizontal frame)
+    speaker_id: Optional[int] = None
+    speaker_label: str = "Unknown"
+
+
+@dataclass
+class SpeakerProfile:
+    """Profil identitas pembicara berbasis histogram warna pakaian/baju dan posisi visual."""
+    id: int
+    name: str
+    color_hist: Any  # Normalized 2D HSV Histogram (16x16)
+    dominant_color_name: str = "Unknown"
+    dominant_bgr: Tuple[int, int, int] = (128, 128, 128)
+    last_seen_t: float = 0.0
+    total_detections: int = 0
+    total_activity_score: float = 0.0
+    positions: List[Tuple[float, float]] = field(default_factory=list)  # (t, norm_cx)
 
 
 class SpeakerTrackingResult:
@@ -27,7 +53,9 @@ class SpeakerTrackingResult:
         speaker_right_x: float = 0.75,
         confidence: float = 0.8,
         is_split_recommended: bool = False,
-        trajectory: Optional[List[Tuple[float, float]]] = None
+        trajectory: Optional[List[Tuple[float, float]]] = None,
+        keyframes: Optional[List[CropKeyframe]] = None,
+        profiles: Optional[List[SpeakerProfile]] = None
     ):
         self.dominant_x_ratio = dominant_x_ratio  # 0.0 (kiri) sampai 1.0 (kanan)
         self.speakers_detected = speakers_detected
@@ -36,6 +64,8 @@ class SpeakerTrackingResult:
         self.confidence = confidence
         self.is_split_recommended = is_split_recommended
         self.trajectory = trajectory or []
+        self.keyframes = keyframes or []
+        self.profiles = profiles or []
 
 
 def _get_cascade_classifier():
@@ -53,17 +83,147 @@ def _get_cascade_classifier():
         return None
 
 
+def _extract_torso_color_hist(frame: np.ndarray, x: int, y: int, w: int, h: int) -> Tuple[Optional[np.ndarray], str, Tuple[int, int, int]]:
+    """
+    Mengekstrak histogram warna 2D HSV dari area torso / baju di bawah wajah.
+    Memberikan identitas warna unik (Person Re-ID) pada pembicara.
+    """
+    f_h, f_w = frame.shape[:2]
+    
+    # Area pakaian/torso: tepat di bawah dagu/leher
+    torso_y1 = min(f_h - 1, y + int(h * 0.85))
+    torso_y2 = min(f_h, y + int(h * 2.6))
+    torso_x1 = max(0, x - int(w * 0.2))
+    torso_x2 = min(f_w, x + int(w * 1.2))
+
+    if torso_y2 <= torso_y1 or torso_x2 <= torso_x1:
+        return None, "Unknown", (128, 128, 128)
+
+    torso_crop = frame[torso_y1:torso_y2, torso_x1:torso_x2]
+    if torso_crop.size == 0 or torso_crop.shape[0] < 5 or torso_crop.shape[1] < 5:
+        return None, "Unknown", (128, 128, 128)
+
+    # Konversi ke HSV untuk deskriptor warna yang stabil terhadap pencahayaan
+    hsv = cv2.cvtColor(torso_crop, cv2.COLOR_BGR2HSV)
+    
+    # 2D Histogram Hue (16 bins) & Saturation (16 bins)
+    hist = cv2.calcHist([hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+    cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+
+    # Hitung warna dominan sederhana (BGR rata-rata)
+    mean_bgr = cv2.mean(torso_crop)[:3]
+    b, g, r = int(mean_bgr[0]), int(mean_bgr[1]), int(mean_bgr[2])
+
+    # Klasifikasi nama warna dasar untuk log informatif
+    color_name = _classify_color_name(r, g, b)
+
+    return hist, color_name, (b, g, r)
+
+
+def _classify_color_name(r: int, g: int, b: int) -> str:
+    """Mengklasifikasikan nama warna pakaian untuk log dan identifikasi manusia."""
+    brightness = (r + g + b) / 3.0
+    if brightness < 45:
+        return "Hitam/Gelap"
+    if brightness > 215 and max(r, g, b) - min(r, g, b) < 25:
+        return "Putih/Terang"
+    if max(r, g, b) - min(r, g, b) < 20:
+        return "Abu-abu"
+    
+    if r > g and r > b:
+        if g > 150 and b < 100:
+            return "Kuning/Oranye"
+        return "Merah/Cokelat"
+    elif g > r and g > b:
+        return "Hijau"
+    elif b > r and b > g:
+        return "Biru"
+    return "Berwarna"
+
+
+def _match_or_create_speaker_profile(
+    profiles: List[SpeakerProfile],
+    color_hist: Optional[np.ndarray],
+    color_name: str,
+    bgr: Tuple[int, int, int],
+    norm_cx: float,
+    t_sec: float,
+    activity_score: float
+) -> Tuple[SpeakerProfile, int]:
+    """
+    Mencocokkan wajah & baju pembicara dengan profil yang sudah ada berdasarkan
+    kemiripan histogram warna (Bhattacharyya Distance).
+    Jika belum ada yang cocok, daftarkan profil pembicara baru (ID baru).
+    """
+    if color_hist is None or not profiles:
+        # Jika belum ada profil atau histogram kosong, buat profil pertama
+        new_id = len(profiles) + 1
+        new_profile = SpeakerProfile(
+            id=new_id,
+            name=f"Speaker {new_id} ({color_name})",
+            color_hist=color_hist,
+            dominant_color_name=color_name,
+            dominant_bgr=bgr,
+            last_seen_t=t_sec,
+            total_detections=1,
+            total_activity_score=activity_score,
+            positions=[(t_sec, norm_cx)]
+        )
+        profiles.append(new_profile)
+        return new_profile, new_id
+
+    # Bandingkan dengan semua profil yang ada menggunakan Bhattacharyya distance (0 = identik, 1 = beda total)
+    best_match: Optional[SpeakerProfile] = None
+    best_dist = 1.0
+
+    for profile in profiles:
+        if profile.color_hist is None:
+            continue
+        dist = cv2.compareHist(color_hist, profile.color_hist, cv2.HISTCMP_BHATTACHARYYA)
+        if dist < best_dist:
+            best_dist = dist
+            best_match = profile
+
+    # Ambang batas kemiripan warna baju (Threshold < 0.48 dianggap orang yang sama)
+    if best_match is not None and best_dist < 0.48:
+        # Update running histogram profil (Moving Average 80% lama + 20% baru)
+        best_match.color_hist = (0.8 * best_match.color_hist + 0.2 * color_hist).astype(np.float32)
+        cv2.normalize(best_match.color_hist, best_match.color_hist, 0, 1, cv2.NORM_MINMAX)
+        best_match.last_seen_t = t_sec
+        best_match.total_detections += 1
+        best_match.total_activity_score += activity_score
+        best_match.positions.append((t_sec, norm_cx))
+        return best_match, best_match.id
+    else:
+        # Buat profil pembicara baru
+        new_id = len(profiles) + 1
+        new_profile = SpeakerProfile(
+            id=new_id,
+            name=f"Speaker {new_id} ({color_name})",
+            color_hist=color_hist,
+            dominant_color_name=color_name,
+            dominant_bgr=bgr,
+            last_seen_t=t_sec,
+            total_detections=1,
+            total_activity_score=activity_score,
+            positions=[(t_sec, norm_cx)]
+        )
+        profiles.append(new_profile)
+        return new_profile, new_id
+
+
 def detect_speakers_in_clip(
     video_path: Path,
     start_time: float,
     duration: float,
-    sample_fps: float = 2.0,
-    max_samples: int = 60
+    sample_fps: float = 3.0,
+    max_samples: int = 90
 ) -> SpeakerTrackingResult:
     """
-    Memindai klip video dan mendeteksi posisi wajah/pembicara aktif.
-    Mengembalikan SpeakerTrackingResult berisi rasio posisi X pembicara (0.0 - 1.0)
-    dan rekomendasi apakah podcast/dialog 2 orang.
+    Memindai klip video secara temporal dan mendeteksi:
+    1. Pergantian angle kamera (Scene Cuts).
+    2. Identitas pembicara aktif berdasarkan warna baju & gerakan mulut (Person Re-ID).
+    3. Trajektori keyframe crop dinamis agar pemotongan 9:16 mengikuti perpindahan kamera.
     """
     if not OPENCV_AVAILABLE:
         logger.debug("OpenCV tidak tersedia, menggunakan fallback center crop.")
@@ -84,7 +244,7 @@ def detect_speakers_in_clip(
         width = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1920
         height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1080
 
-        # Jika video sudah berformat vertikal atau square, tidak perlu crop X
+        # Jika video sudah vertikal, tidak perlu tracking horizontal
         if width <= height:
             cap.release()
             return SpeakerTrackingResult(dominant_x_ratio=0.5, speakers_detected=1)
@@ -99,13 +259,15 @@ def detect_speakers_in_clip(
             step_stride = len(sample_frame_indices) // max_samples
             sample_frame_indices = sample_frame_indices[::step_stride][:max_samples]
 
-        detected_face_centers: List[Tuple[float, float, float]] = []  # (t_sec, norm_cx, weight)
-        face_detections_by_frame: List[List[Dict[str, Any]]] = []
-        prev_mouth_patches: Dict[int, np.ndarray] = {}  # cluster_id -> prev_mouth_gray
+        profiles: List[SpeakerProfile] = []
+        frame_detections: List[Dict[str, Any]] = []
+        scene_cut_times: List[float] = [0.0]
+        prev_frame_gray: Optional[np.ndarray] = None
 
         left_speaker_faces: List[float] = []
         right_speaker_faces: List[float] = []
         center_speaker_faces: List[float] = []
+        detected_face_centers: List[Tuple[float, float, float]] = []
 
         max_faces_in_single_frame = 0
 
@@ -115,17 +277,29 @@ def detect_speakers_in_clip(
             if not ret or frame is None:
                 continue
 
+            t_sec = (frame_idx - start_frame) / fps
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Deteksi wajah dengan scaleFactor dan minNeighbors
+
+            # Deteksi Scene Cut / Perpindahan Angle Kamera
+            if prev_frame_gray is not None:
+                # Perbedaan histogram intensitas antar sample
+                diff = cv2.absdiff(gray, prev_frame_gray)
+                mean_diff = float(np.mean(diff))
+                # Jika mean difference tinggi (> 38), terjadi pergantian shot kamera
+                if mean_diff > 38.0 and (t_sec - scene_cut_times[-1]) > 0.8:
+                    scene_cut_times.append(t_sec)
+                    logger.debug(f"🎬 Terdeteksi Scene Cut / Angle Change pada t={start_time + t_sec:.2f}s (diff={mean_diff:.1f})")
+            prev_frame_gray = gray
+
+            # Deteksi Wajah
             faces = face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.15,
                 minNeighbors=4,
-                minSize=(int(height * 0.08), int(height * 0.08)),
+                minSize=(int(height * 0.07), int(height * 0.07)),
                 flags=cv2.CASCADE_SCALE_IMAGE
             )
 
-            t_sec = (frame_idx - start_frame) / fps
             frame_faces: List[Dict[str, Any]] = []
 
             if len(faces) > 0:
@@ -134,37 +308,44 @@ def detect_speakers_in_clip(
                     norm_cx = (x + (w / 2.0)) / width
                     area = (w * h) / (width * height)
 
-                    # Analisis gerak di area mulut/bibir (Lip Motion / Frame Differencing)
-                    # untuk membedakan pembicara aktif vs orang yang diam di konferensi pers
+                    # Analisis gerak di area mulut/bibir
                     mouth_y1 = int(y + h * 0.62)
                     mouth_y2 = int(y + h * 0.98)
                     mouth_x1 = int(x + w * 0.25)
                     mouth_x2 = int(x + w * 0.75)
-
                     mouth_crop = gray[max(0, mouth_y1):min(int(height), mouth_y2), max(0, mouth_x1):min(int(width), mouth_x2)]
-                    motion_score = 1.0
+                    
+                    mouth_std = float(np.std(mouth_crop)) if mouth_crop.size > 0 else 0.0
+                    motion_score = max(0.6, min(3.5, mouth_std / 18.0))
 
-                    if mouth_crop.size > 0:
-                        # Resize ke ukuran standar untuk komparasi differencing
-                        mouth_std = float(np.std(mouth_crop))
-                        # Wajah dengan tekstur mulut aktif berbicara menghasilkan variasi intensitas tinggi
-                        motion_score = max(0.6, min(3.5, mouth_std / 18.0))
-
-                    # Centrality bias: Pembicara konferensi pers/podium biasanya di dekat area tengah panggung
+                    # Centrality boost
                     center_distance = abs(norm_cx - 0.5)
                     centrality_boost = 1.0 + max(0.0, (0.35 - center_distance))
 
-                    # Bobot komposit: Area Wajah (kedekatan kamera) x Aktivitas Mulut x Posisi
                     weight = (area ** 0.8) * motion_score * centrality_boost
                     detected_face_centers.append((t_sec, norm_cx, weight))
 
+                    # Ekstraksi Warna Baju & Pencocokan Profil ID Pembicara
+                    torso_hist, color_name, mean_bgr = _extract_torso_color_hist(frame, x, y, w, h)
+                    profile, spk_id = _match_or_create_speaker_profile(
+                        profiles=profiles,
+                        color_hist=torso_hist,
+                        color_name=color_name,
+                        bgr=mean_bgr,
+                        norm_cx=norm_cx,
+                        t_sec=t_sec,
+                        activity_score=weight
+                    )
+
                     frame_faces.append({
+                        "t": t_sec,
                         "cx": norm_cx,
                         "w": w,
                         "h": h,
-                        "area": area,
                         "weight": weight,
-                        "motion": motion_score
+                        "speaker_id": spk_id,
+                        "speaker_name": profile.name,
+                        "color": color_name
                     })
 
                     if norm_cx < 0.42:
@@ -174,22 +355,29 @@ def detect_speakers_in_clip(
                     else:
                         center_speaker_faces.append(norm_cx)
 
-            face_detections_by_frame.append(frame_faces)
+            frame_detections.append({
+                "t": t_sec,
+                "faces": frame_faces
+            })
 
         cap.release()
 
+        # Log identitas pembicara yang berhasil dipetakan
+        if profiles:
+            prof_summary = ", ".join([f"{p.name} (deteksi={p.total_detections})" for p in profiles])
+            logger.info(f"👤 Profil Pembicara Berhasil Diidentifikasi: {prof_summary}")
+
         if not detected_face_centers:
-            # Tidak ada wajah terdeteksi, fallback tengah
             return SpeakerTrackingResult(dominant_x_ratio=0.5, speakers_detected=1, confidence=0.3)
+
+        # Tambahkan batas akhir klip ke scene cut
+        if scene_cut_times[-1] < duration:
+            scene_cut_times.append(duration)
 
         # -------------------------------------------------------------
         # Logika Deteksi: Konferensi Pers / Monolog vs Podcast 2 Orang (Wide Shot)
         # -------------------------------------------------------------
-        # Pada Konferensi Pers: Sering ada 3+ orang di panggung/meja, tapi HANYA 1 yang berbicara aktif di mic.
-        # Pada Podcast 2 Orang: Ada 2 klaster terpisah (kiri & kanan) yang bergantian berbicara atau tampil 2-shot.
         is_crowd_or_press_conf = (max_faces_in_single_frame >= 3)
-
-        # Kelompokkan deteksi wajah ke klaster horizontal (Kiri, Tengah, Kanan)
         left_weights = sum(w for _, cx, w in detected_face_centers if cx < 0.42)
         center_weights = sum(w for _, cx, w in detected_face_centers if 0.42 <= cx <= 0.58)
         right_weights = sum(w for _, cx, w in detected_face_centers if cx > 0.58)
@@ -198,8 +386,6 @@ def detect_speakers_in_clip(
         right_avg = float(np.median(right_speaker_faces)) if right_speaker_faces else 0.75
         center_avg = float(np.median(center_speaker_faces)) if center_speaker_faces else 0.5
 
-        # Deteksi apakah video merupakan Wide Shot 2 Orang (Podcast Two-Shot)
-        # di mana ada orang di kiri dan kanan, tetapi bagian tengah kosong
         is_two_shot_podcast = (
             not is_crowd_or_press_conf and
             len(left_speaker_faces) >= 2 and
@@ -207,75 +393,101 @@ def detect_speakers_in_clip(
             len(center_speaker_faces) <= 1
         )
 
-        # Split screen otomatis aktif jika:
-        # 1. Terdeteksi 2 orang aktif di kiri & kanan (podcast wide shot), ATAU
-        # 2. Kedua sisi memiliki porsi bobot yang signifikan
         has_active_left = len(left_speaker_faces) >= 2 and (left_weights > 0.15 * (left_weights + right_weights + center_weights))
         has_active_right = len(right_speaker_faces) >= 2 and (right_weights > 0.15 * (left_weights + right_weights + center_weights))
-        
         is_split = (not is_crowd_or_press_conf) and (is_two_shot_podcast or (has_active_left and has_active_right))
 
-        # Tentukan posisi X pembicara tunggal (jika single-cam digunakan)
-        # JANGAN PERNAH mengambil rata-rata aritmatika kiri dan kanan karena akan jatuh ke ruang kosong di tengah!
-        if is_two_shot_podcast or (len(left_speaker_faces) >= 2 and len(right_speaker_faces) >= 2):
-            # Pada video 2 orang, pilih salah satu pembicara yang paling aktif
-            if left_weights >= right_weights:
-                weighted_cx = left_avg
-                logger.info(f"🎙️ Podcast 2 Orang (Wide Shot): Mengunci Host/Speaker Kiri di X={left_avg:.2f} (Bobot={left_weights:.1f} vs Kanan={right_weights:.1f})")
-            else:
-                weighted_cx = right_avg
-                logger.info(f"🎙️ Podcast 2 Orang (Wide Shot): Mengunci Guest/Speaker Kanan di X={right_avg:.2f} (Bobot={right_weights:.1f} vs Kiri={left_weights:.1f})")
-        elif is_crowd_or_press_conf:
-            cluster_scores = [
-                (center_avg, center_weights, "center"),
-                (left_avg, left_weights, "left"),
-                (right_avg, right_weights, "right"),
+        # -------------------------------------------------------------
+        # Pembentukan Trajektori Keyframe Dinamis per Segmen Waktu / Angle Kamera
+        # -------------------------------------------------------------
+        keyframes: List[CropKeyframe] = []
+        
+        # Kelompokkan deteksi per interval scene-cut (atau per window ~3-4 detik)
+        for i in range(len(scene_cut_times) - 1):
+            t_seg_start = scene_cut_times[i]
+            t_seg_end = scene_cut_times[i + 1]
+
+            # Ambil deteksi di segmen ini
+            seg_detections = [
+                d for f in frame_detections if t_seg_start <= f["t"] <= t_seg_end
+                for d in f["faces"]
             ]
-            dominant_cluster_x, dominant_score, cluster_name = max(cluster_scores, key=lambda c: c[1])
-            logger.info(
-                f"🎤 Terdeteksi Konferensi Pers / Keramaian ({max_faces_in_single_frame} wajah terdeteksi). "
-                f"Mengunci pembicara monolog aktif di klaster '{cluster_name}' (X={dominant_cluster_x:.2f})."
-            )
-            weighted_cx = dominant_cluster_x
-            is_split = False
-        else:
-            # Monolog 1 orang di tengah / sudut tertentu
-            if center_speaker_faces:
-                weighted_cx = center_avg
-            elif left_speaker_faces and not right_speaker_faces:
-                weighted_cx = left_avg
-            elif right_speaker_faces and not left_speaker_faces:
-                weighted_cx = right_avg
+
+            if not seg_detections:
+                # Jika segmen ini tidak ada wajah terdeteksi, gunakan posisi segmen sebelumnya atau median global
+                prev_x = keyframes[-1].crop_x_ratio if keyframes else 0.5
+                keyframes.append(CropKeyframe(
+                    start_t=t_seg_start,
+                    end_t=t_seg_end,
+                    crop_x_ratio=prev_x,
+                    speaker_label="Fallback Segmen"
+                ))
+                continue
+
+            # Cari pembicara dengan total bobot aktivitas tertinggi di segmen waktu ini
+            seg_speaker_weights: Dict[int, float] = {}
+            seg_speaker_positions: Dict[int, List[float]] = {}
+            seg_speaker_labels: Dict[int, str] = {}
+
+            for d in seg_detections:
+                spk_id = d["speaker_id"]
+                seg_speaker_weights[spk_id] = seg_speaker_weights.get(spk_id, 0.0) + d["weight"]
+                if spk_id not in seg_speaker_positions:
+                    seg_speaker_positions[spk_id] = []
+                seg_speaker_positions[spk_id].append(d["cx"])
+                seg_speaker_labels[spk_id] = d["speaker_name"]
+
+            # Pilih pembicara aktif di segmen ini
+            dominant_spk_id = max(seg_speaker_weights.keys(), key=lambda k: seg_speaker_weights[k])
+            spk_positions = seg_speaker_positions[dominant_spk_id]
+            seg_cx = float(np.median(spk_positions))
+            seg_label = seg_speaker_labels[dominant_spk_id]
+
+            # Batasi rentang aman crop
+            seg_cx = max(0.18, min(0.82, seg_cx))
+
+            keyframes.append(CropKeyframe(
+                start_t=t_seg_start,
+                end_t=t_seg_end,
+                crop_x_ratio=seg_cx,
+                speaker_id=dominant_spk_id,
+                speaker_label=seg_label
+            ))
+
+        # Gabungkan keyframe yang posisinya berdekatan (< 0.04 selisih) untuk mencegah micro-jitter
+        merged_keyframes: List[CropKeyframe] = []
+        for kf in keyframes:
+            if not merged_keyframes:
+                merged_keyframes.append(kf)
             else:
-                total_weight = sum(w for _, _, w in detected_face_centers)
-                if total_weight > 0:
-                    weighted_cx = sum(cx * w for _, cx, w in detected_face_centers) / total_weight
+                last_kf = merged_keyframes[-1]
+                if abs(kf.crop_x_ratio - last_kf.crop_x_ratio) < 0.05 and kf.speaker_id == last_kf.speaker_id:
+                    # Gabungkan durasi
+                    last_kf.end_t = kf.end_t
                 else:
-                    weighted_cx = 0.5
+                    merged_keyframes.append(kf)
 
-        # PERLINDUNGAN ANTI-EMPTY-CENTER:
-        # Jika hasil weighted_cx jatuh di area tengah (0.42 - 0.58) PADAHAL di tengah TIDAK ADA wajah
-        # dan ada wajah jelas di kiri & kanan, paksa pilih klaster dengan bobot terbesar
-        if (0.42 <= weighted_cx <= 0.58) and len(center_speaker_faces) == 0 and (left_speaker_faces or right_speaker_faces):
-            logger.warning(f"⚠️ Terdeteksi jebakan tengah kosong (X={weighted_cx:.2f}). Menghindari pemotongan ruang kosong...")
-            if left_weights >= right_weights and left_speaker_faces:
-                weighted_cx = left_avg
-            elif right_speaker_faces:
-                weighted_cx = right_avg
-            else:
-                weighted_cx = left_avg
+        # Hitung global dominant X
+        if merged_keyframes:
+            weighted_global_x = sum(kf.crop_x_ratio * (kf.end_t - kf.start_t) for kf in merged_keyframes) / max(0.1, duration)
+        else:
+            weighted_global_x = 0.5
 
-        # Batasi posisi X agar crop 9:16 tetap aman di dalam frame (margin 0.18 - 0.82)
-        weighted_cx = max(0.18, min(0.82, weighted_cx))
+        logger.info(
+            f"🎯 Dynamic Speaker Tracking: {len(merged_keyframes)} Keyframe Segmen terbentuk. "
+            f"Speaker aktif berpindah angle: {[f'{k.speaker_label} @ X={k.crop_x_ratio:.2f} [{k.start_t:.1f}s-{k.end_t:.1f}s]' for k in merged_keyframes]}"
+        )
 
         return SpeakerTrackingResult(
-            dominant_x_ratio=float(weighted_cx),
-            speakers_detected=2 if (is_split or is_two_shot_podcast) else (max_faces_in_single_frame if max_faces_in_single_frame > 1 else 1),
+            dominant_x_ratio=float(weighted_global_x),
+            speakers_detected=len(profiles) if profiles else (2 if is_split else 1),
             speaker_left_x=max(0.15, min(0.45, left_avg)),
             speaker_right_x=max(0.55, min(0.85, right_avg)),
-            confidence=0.92 if len(detected_face_centers) >= 4 else 0.6,
+            confidence=0.95 if len(detected_face_centers) >= 4 else 0.6,
             is_split_recommended=is_split,
-            trajectory=[(t, cx) for t, cx, _ in detected_face_centers]
+            trajectory=[(t, cx) for t, cx, _ in detected_face_centers],
+            keyframes=merged_keyframes,
+            profiles=profiles
         )
 
     except Exception as e:
@@ -294,36 +506,37 @@ def generate_speaker_crop_filter(
     """
     Menghasilkan rantai filter video FFmpeg yang mengarahkan fokus crop 9:16 (1080x1920)
     ke wajah pembicara aktif berdasarkan deteksi OpenCV.
-    Jika 2 orang berbicara bersamaan (podcast), menghasilkan Dual-Speaker Split Screen (Atas/Bawah).
+    
+    Fitur Utama:
+    1. Re-ID Warna Baju (Torso Color Profiling) agar tidak salah mengunci orang saat kamera berganti.
+    2. Dynamic Time-Based Crop Expression (x='if(...)') yang bergerak otomatis mengikuti angle pembicara.
+    3. Dual-Speaker Podcast Split (Atas/Bawah) untuk video podcast 2 orang.
     """
     mode = vertical_mode.lower()
 
-    # Hitung rasio target 9:16 dari ketinggian asli
-    # Di video landscape 1920x1080, crop 9:16 dari height 1080 = lebar 607.5px (1080 * 9 / 16)
+    # Hitung rasio target 9:16 dari ketinggian asli (1080x1920)
     target_crop_w = int(round((video_height * 9) / 16))
     if target_crop_w % 2 != 0:
         target_crop_w += 1
 
-    # Jalankan deteksi pembicara
+    max_crop_x = max(0, video_width - target_crop_w)
+
+    # Jalankan deteksi pembicara temporal
     tracking = detect_speakers_in_clip(video_path, start_time, duration)
     logger.info(
         f"Smart Speaker Tracker [t={start_time:.1f}s-{start_time+duration:.1f}s]: "
         f"X-Ratio={tracking.dominant_x_ratio:.2f}, Speakers={tracking.speakers_detected}, "
-        f"Confidence={tracking.confidence:.2f}, SplitRec={tracking.is_split_recommended}"
+        f"Keyframes={len(tracking.keyframes)}, Confidence={tracking.confidence:.2f}"
     )
 
     # 1. Mode Podcast Split (Dua Pembicara Tumpuk Atas-Bawah)
-    # Otomatis aktif jika mode 'split' atau mode 'auto' saat 2 pembicara terdeteksi
     if (mode in ("split", "speaker_split", "podcast")) or (mode == "auto" and tracking.is_split_recommended):
-        # Bagi layar menjadi 2 crop: Atas fokus Speaker 1 (Kiri/Host), Bawah fokus Speaker 2 (Kanan/Tamu)
-        # Tiap crop berukuran 1080x960 (rasio 9:8)
         split_crop_w = int(round((video_height * 1080) / 960))  # Aspect 1080:960
         if split_crop_w % 2 != 0:
             split_crop_w += 1
         if split_crop_w > video_width:
             split_crop_w = video_width
         
-        # Koordinat X kiri dan kanan dengan margin aman
         x_left = max(0, min(video_width - split_crop_w, int(tracking.speaker_left_x * video_width - split_crop_w / 2)))
         x_right = max(0, min(video_width - split_crop_w, int(tracking.speaker_right_x * video_width - split_crop_w / 2)))
 
@@ -335,16 +548,36 @@ def generate_speaker_crop_filter(
         )
         return filter_str
 
-    # 2. Mode Smart Speaker Tracking (Active Face Focus Single-Cam dengan Anti-Jitter)
-    # Hitung posisi X crop yang memusatkan wajah pembicara
-    face_center_px = int(tracking.dominant_x_ratio * video_width)
-    crop_x = int(face_center_px - (target_crop_w / 2))
-    
-    # Batasi agar crop_x tidak keluar dari canvas video
-    max_crop_x = max(0, video_width - target_crop_w)
-    crop_x = max(0, min(max_crop_x, crop_x))
+    # 2. Mode Dynamic Keyframe Tracking (Mengikuti perpindahan pembicara dan angle kamera)
+    keyframes = tracking.keyframes
 
-    # Skala hasil crop ke 1080x1920 standar TikTok
-    filter_str = f"crop={target_crop_w}:{video_height}:{crop_x}:0,scale=1080:1920:flags=lanczos"
+    # Jika hanya ada 1 keyframe atau video stabil tanpa pergantian angle:
+    if len(keyframes) <= 1:
+        dominant_x_ratio = keyframes[0].crop_x_ratio if keyframes else tracking.dominant_x_ratio
+        face_center_px = int(dominant_x_ratio * video_width)
+        crop_x = int(face_center_px - (target_crop_w / 2))
+        crop_x = max(0, min(max_crop_x, crop_x))
+        return f"crop={target_crop_w}:{video_height}:{crop_x}:0,scale=1080:1920:flags=lanczos"
+
+    # Jika ada multiple keyframes (kamera berganti shot / pembicara berpindah):
+    # Buat ekspresi evaluasi waktu FFmpeg yang dinamis: if(lt(t, T1), X1, if(lt(t, T2), X2, X3))
+    # Hitung posisi crop_x untuk setiap keyframe
+    kf_coords: List[Tuple[float, int]] = []
+    for kf in keyframes:
+        center_px = int(kf.crop_x_ratio * video_width)
+        cx = max(0, min(max_crop_x, int(center_px - (target_crop_w / 2))))
+        kf_coords.append((kf.end_t, cx))
+
+    # Bangun nested if expression untuk FFmpeg
+    def _build_nested_if(coords: List[Tuple[float, int]], index: int = 0) -> str:
+        if index >= len(coords) - 1:
+            return str(coords[-1][1])
+        end_t, x_val = coords[index]
+        sub_expr = _build_nested_if(coords, index + 1)
+        return f"if(lt(t,{end_t:.2f}),{x_val},{sub_expr})"
+
+    dynamic_x_expr = _build_nested_if(kf_coords, 0)
+    logger.info(f"🎬 Generated Dynamic FFmpeg Crop Expression: x='{dynamic_x_expr}'")
+
+    filter_str = f"crop={target_crop_w}:{video_height}:x='{dynamic_x_expr}':y=0,scale=1080:1920:flags=lanczos"
     return filter_str
-
