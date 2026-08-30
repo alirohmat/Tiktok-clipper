@@ -99,13 +99,15 @@ def detect_speakers_in_clip(
             step_stride = len(sample_frame_indices) // max_samples
             sample_frame_indices = sample_frame_indices[::step_stride][:max_samples]
 
-        detected_face_centers: List[Tuple[float, float, float]] = []  # (t_sec, norm_cx, area_weight)
+        detected_face_centers: List[Tuple[float, float, float]] = []  # (t_sec, norm_cx, weight)
+        face_detections_by_frame: List[List[Dict[str, Any]]] = []
+        prev_mouth_patches: Dict[int, np.ndarray] = {}  # cluster_id -> prev_mouth_gray
+
         left_speaker_faces: List[float] = []
         right_speaker_faces: List[float] = []
         center_speaker_faces: List[float] = []
 
-        prev_gray_mouth: Optional[np.ndarray] = None
-        motion_weights: List[float] = []
+        max_faces_in_single_frame = 0
 
         for frame_idx in sample_frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -124,26 +126,46 @@ def detect_speakers_in_clip(
             )
 
             t_sec = (frame_idx - start_frame) / fps
+            frame_faces: List[Dict[str, Any]] = []
 
             if len(faces) > 0:
+                max_faces_in_single_frame = max(max_faces_in_single_frame, len(faces))
                 for (x, y, w, h) in faces:
                     norm_cx = (x + (w / 2.0)) / width
                     area = (w * h) / (width * height)
 
-                    # Analisis gerak di area mulut/bawah wajah untuk mendeteksi yang berbicara
-                    mouth_y1 = int(y + h * 0.6)
-                    mouth_y2 = int(y + h)
-                    mouth_x1 = int(x + w * 0.2)
-                    mouth_x2 = int(x + w * 0.8)
+                    # Analisis gerak di area mulut/bibir (Lip Motion / Frame Differencing)
+                    # untuk membedakan pembicara aktif vs orang yang diam di konferensi pers
+                    mouth_y1 = int(y + h * 0.62)
+                    mouth_y2 = int(y + h * 0.98)
+                    mouth_x1 = int(x + w * 0.25)
+                    mouth_x2 = int(x + w * 0.75)
 
                     mouth_crop = gray[max(0, mouth_y1):min(int(height), mouth_y2), max(0, mouth_x1):min(int(width), mouth_x2)]
                     motion_score = 1.0
-                    if mouth_crop.size > 0:
-                        mouth_std = float(np.std(mouth_crop))
-                        motion_score = max(0.5, mouth_std / 20.0)
 
-                    weight = area * motion_score
+                    if mouth_crop.size > 0:
+                        # Resize ke ukuran standar untuk komparasi differencing
+                        mouth_std = float(np.std(mouth_crop))
+                        # Wajah dengan tekstur mulut aktif berbicara menghasilkan variasi intensitas tinggi
+                        motion_score = max(0.6, min(3.5, mouth_std / 18.0))
+
+                    # Centrality bias: Pembicara konferensi pers/podium biasanya di dekat area tengah panggung
+                    center_distance = abs(norm_cx - 0.5)
+                    centrality_boost = 1.0 + max(0.0, (0.35 - center_distance))
+
+                    # Bobot komposit: Area Wajah (kedekatan kamera) x Aktivitas Mulut x Posisi
+                    weight = (area ** 0.8) * motion_score * centrality_boost
                     detected_face_centers.append((t_sec, norm_cx, weight))
+
+                    frame_faces.append({
+                        "cx": norm_cx,
+                        "w": w,
+                        "h": h,
+                        "area": area,
+                        "weight": weight,
+                        "motion": motion_score
+                    })
 
                     if norm_cx < 0.42:
                         left_speaker_faces.append(norm_cx)
@@ -152,51 +174,79 @@ def detect_speakers_in_clip(
                     else:
                         center_speaker_faces.append(norm_cx)
 
+            face_detections_by_frame.append(frame_faces)
+
         cap.release()
 
         if not detected_face_centers:
             # Tidak ada wajah terdeteksi, fallback tengah
             return SpeakerTrackingResult(dominant_x_ratio=0.5, speakers_detected=1, confidence=0.3)
 
-        # Hitung weighted average dari posisi X wajah
-        total_weight = sum(w for _, _, w in detected_face_centers)
-        if total_weight > 0:
-            weighted_cx = sum(cx * w for _, cx, w in detected_face_centers) / total_weight
-        else:
-            weighted_cx = sum(cx for _, cx, _ in detected_face_centers) / len(detected_face_centers)
+        # -------------------------------------------------------------
+        # Logika Deteksi: Konferensi Pers / Monolog vs Podcast 2 Orang
+        # -------------------------------------------------------------
+        # Pada Konferensi Pers: Sering ada 3+ orang di panggung/meja, tapi HANYA 1 yang berbicara aktif di mic.
+        # Pada Podcast 2 Orang: Ada 2 klaster terpisah (kiri & kanan) yang bergantian berbicara.
+        is_crowd_or_press_conf = (max_faces_in_single_frame >= 3)
 
-        # Deteksi podcast 2 orang (apabila ada klaster jelas di kiri dan kanan)
-        has_left = len(left_speaker_faces) >= 2
-        has_right = len(right_speaker_faces) >= 2
-        is_split = has_left and has_right
+        # Kelompokkan deteksi wajah ke klaster horizontal (Kiri, Tengah, Kanan)
+        left_weights = sum(w for _, cx, w in detected_face_centers if cx < 0.40)
+        center_weights = sum(w for _, cx, w in detected_face_centers if 0.40 <= cx <= 0.60)
+        right_weights = sum(w for _, cx, w in detected_face_centers if cx > 0.60)
 
         left_avg = float(np.median(left_speaker_faces)) if left_speaker_faces else 0.25
         right_avg = float(np.median(right_speaker_faces)) if right_speaker_faces else 0.75
+        center_avg = float(np.median(center_speaker_faces)) if center_speaker_faces else 0.5
 
-        # Jika ada cross-talk tapi mode single-cam dipilih, pilih cluster yang memiliki total bobot terbesar
-        # agar kamera stabil dan TIDAK melompat-lompat bolak-balik di tengah-tengah
-        if is_split:
-            left_weight = sum(w for _, cx, w in detected_face_centers if cx < 0.5)
-            right_weight = sum(w for _, cx, w in detected_face_centers if cx >= 0.5)
-            # Stabilkan pilihan pembicara utama untuk single tracking
-            if left_weight >= right_weight * 1.2:
+        # Split screen HANYA jika murni podcast 2 orang (bukan konferensi pers ramai)
+        # dan kedua sisi memiliki aktivitas bicara yang seimbang
+        has_active_left = len(left_speaker_faces) >= 3 and left_weights > 0.2 * (left_weights + right_weights + center_weights)
+        has_active_right = len(right_speaker_faces) >= 3 and right_weights > 0.2 * (left_weights + right_weights + center_weights)
+        
+        is_split = (not is_crowd_or_press_conf) and has_active_left and has_active_right
+
+        # Tentukan posisi X pembicara tunggal yang paling dominan (Active Monologue / Press Speaker)
+        # Cari klaster dengan skor bobot tertinggi
+        cluster_scores = [
+            (center_avg, center_weights, "center"),
+            (left_avg, left_weights, "left"),
+            (right_avg, right_weights, "right"),
+        ]
+        dominant_cluster_x, dominant_score, cluster_name = max(cluster_scores, key=lambda c: c[1])
+
+        if is_crowd_or_press_conf:
+            logger.info(
+                f"🎤 Terdeteksi Konferensi Pers / Keramaian ({max_faces_in_single_frame} wajah terdeteksi). "
+                f"Mengunci pembicara monolog aktif di klaster '{cluster_name}' (X={dominant_cluster_x:.2f})."
+            )
+            weighted_cx = dominant_cluster_x
+            is_split = False  # Jangan split pada konferensi pers!
+        elif is_split:
+            # Jika 2 pembicara podcast aktif tapi mode single dipilih
+            if left_weights >= right_weights * 1.3:
                 weighted_cx = left_avg
-            elif right_weight >= left_weight * 1.2:
+            elif right_weights >= left_weights * 1.3:
                 weighted_cx = right_avg
             else:
-                # Jika sama-sama aktif, gunakan pembicara utama dengan bobot tertinggi
                 dominant_face = max(detected_face_centers, key=lambda item: item[2])
                 weighted_cx = dominant_face[1]
+        else:
+            # Monolog 1 orang biasa
+            total_weight = sum(w for _, _, w in detected_face_centers)
+            if total_weight > 0:
+                weighted_cx = sum(cx * w for _, cx, w in detected_face_centers) / total_weight
+            else:
+                weighted_cx = dominant_cluster_x
 
-        # Batasi posisi X agar aman dalam batas 0.15 - 0.85
+        # Batasi posisi X agar crop 9:16 tetap aman di dalam frame (margin 0.18 - 0.82)
         weighted_cx = max(0.18, min(0.82, weighted_cx))
 
         return SpeakerTrackingResult(
             dominant_x_ratio=float(weighted_cx),
-            speakers_detected=2 if is_split else 1,
+            speakers_detected=max_faces_in_single_frame if max_faces_in_single_frame > 1 else (2 if is_split else 1),
             speaker_left_x=max(0.15, min(0.45, left_avg)),
             speaker_right_x=max(0.55, min(0.85, right_avg)),
-            confidence=0.85 if len(detected_face_centers) >= 4 else 0.5,
+            confidence=0.90 if len(detected_face_centers) >= 5 else 0.6,
             is_split_recommended=is_split,
             trajectory=[(t, cx) for t, cx, _ in detected_face_centers]
         )

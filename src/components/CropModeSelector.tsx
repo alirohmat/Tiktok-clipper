@@ -17,11 +17,19 @@ export const CropModeSelector: React.FC<CropModeSelectorProps> = ({ value, onCha
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
     {
+      id: "auto",
+      label: "Smart Auto-Detect",
+      badge: "Adaptif 2026",
+      badgeColor: "bg-purple-500/20 text-purple-300 border-purple-500/30",
+      description: "AI mendeteksi tipe video: Otomatis kunci pembicara utama jika Konferensi Pers/Monolog, atau Split Layar Atas-Bawah jika Podcast 2 orang.",
+      icon: Sparkles,
+    },
+    {
       id: "speaker",
-      label: "Smart Speaker Tracking",
-      badge: "Rekomendasi AI 2026",
+      label: "Smart Active Speaker",
+      badge: "Konferensi Pers / Monolog",
       badgeColor: "bg-pink-500/20 text-pink-300 border-pink-500/30",
-      description: "OpenCV mendeteksi wajah & gerak mulut pembicara aktif, memotong video 9:16 tepat mengikuti posisi yang berbicara.",
+      description: "OpenCV menganalisis gerak mulut & posisi wajah untuk mengunci 1 pembicara aktif di tengah keramaian/panggung.",
       icon: UserCheck,
     },
     {
@@ -31,14 +39,6 @@ export const CropModeSelector: React.FC<CropModeSelectorProps> = ({ value, onCha
       badgeColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
       description: "Menumpuk 2 pembicara (Host di atas & Tamu di bawah) dalam format vertikal 9:16 1080x1920.",
       icon: Users,
-    },
-    {
-      id: "auto",
-      label: "Smart Auto-Detect",
-      badge: "Adaptif",
-      badgeColor: "bg-purple-500/20 text-purple-300 border-purple-500/30",
-      description: "Otomatis mengidentifikasi apakah video landscape membutuhkan pelacakan pembicara atau center crop.",
-      icon: Sparkles,
     },
     {
       id: "crop",

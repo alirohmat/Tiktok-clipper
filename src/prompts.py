@@ -147,8 +147,9 @@ Berikut adalah daftar segmen transkrip video beranotasi peran pembicara:
 Instruksi Seleksi Berbobot (Story Arc & Zero Fluff):
 1. Baca dialog di atas dan temukan bagian yang memiliki SUBSTANSI CERITA/GAGASAN LENGKAP (bukan sekadar obrolan pembuka atau basa-basi pendek).
 2. Pastikan klip yang dipilih memiliki alur pembuka (masalah/pertanyaan/hook) ➔ isi penjelasan/kronologi mendalam ➔ kesimpulan/punchline akhir yang tuntas.
-3. Pilih {target_clips_count} kandidat klip terbaik dengan variasi hook alami (ekstrem/paradoks/pengakuan/pertanyaan/otoritas) dan retensi tinggi.
-4. Pastikan `start_segment_id` dan `end_segment_id` TERDAFTAR pada transkrip di atas.
+3. PILIH TEPAT {target_clips_count} kandidat klip terbaik dengan variasi hook alami (ekstrem/paradoks/pengakuan/pertanyaan/otoritas) dan retensi tinggi.
+4. JANGAN PERNAH MENGEMBALIKAN ARRAY KOSONG. Jika perbincangan santai atau transkrip pendek, tetap pilih {target_clips_count} bagian percakapan paling menarik dari segmen yang tersedia.
+5. Pastikan `start_segment_id` dan `end_segment_id` TERDAFTAR pada transkrip di atas.
 
 Kembalikan HANYA format JSON murni."""
 
