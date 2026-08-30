@@ -73,6 +73,7 @@ export interface JobData {
     titles: string[];
   };
   clips?: ClipItem[];
+  debugFrames?: string[];
   error?: string;
 }
 

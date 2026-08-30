@@ -40,6 +40,7 @@ import {
   Radio,
   FileVideo,
   Key,
+  Eye,
 } from "lucide-react";
 import {
   PortraitCropMode,
@@ -67,6 +68,7 @@ export default function App() {
   const [minDur, setMinDur] = useState(15);
   const [maxDur, setMaxDur] = useState(60);
   const [subtitles, setSubtitles] = useState(true);
+  const [debugMode, setDebugMode] = useState(false);
   const [vertical, setVertical] = useState<PortraitCropMode>("auto");
   const [groqApiKey, setGroqApiKey] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
@@ -211,6 +213,7 @@ export default function App() {
       formData.append("maxDuration", String(maxDur));
       formData.append("vertical", vertical);
       formData.append("subtitles", String(subtitles));
+      formData.append("debugMode", String(debugMode));
       if (groqApiKey.trim()) {
         formData.append("groqApiKey", groqApiKey.trim());
       }
@@ -697,6 +700,26 @@ export default function App() {
                       />
                     </button>
                   </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">🔍 Debug Mode Bounding Box</label>
+                    <button
+                      type="button"
+                      onClick={() => setDebugMode(!debugMode)}
+                      className={`w-full py-2 px-3 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${
+                        debugMode
+                          ? "bg-amber-500/15 border-amber-500 text-amber-300"
+                          : "bg-slate-950 border-slate-800 text-slate-500"
+                      }`}
+                    >
+                      <span>{debugMode ? "Preview Wajah Aktif" : "Nonaktif"}</span>
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full ${
+                          debugMode ? "bg-amber-400" : "bg-slate-600"
+                        }`}
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Auto-Detect Niche Info Box */}
@@ -867,6 +890,50 @@ export default function App() {
 
             {/* Live Progress Card */}
             {currentJob && <JobProgress job={currentJob} />}
+
+            {/* Debug Frames Preview Section */}
+            {currentJob && currentJob.debugFrames && currentJob.debugFrames.length > 0 && (
+              <div className="space-y-4 bg-slate-900/90 rounded-2xl border border-amber-500/30 p-5 shadow-2xl">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-base font-bold text-white">
+                      🔍 Preview Debug Bounding Box Wajah & Torso ({currentJob.debugFrames.length} Frame)
+                    </h3>
+                  </div>
+                  <span className="text-xs text-amber-300/80 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20">
+                    Verifikasi Akurasi Pelacakan Speaker
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Berikut adalah sampel frame video yang dianotasi dengan kotak deteksi wajah (Haar Cascade), re-ID warna baju torso, ID pembicara aktif, serta area kotak crop vertikal 9:16 untuk memastikan sistem mendeteksi pembicara dengan tepat sebelum proses render final.
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
+                  {currentJob.debugFrames.map((filename, idx) => {
+                    const imgSrc = `/api/media/${currentJob.id}/${filename}`;
+                    return (
+                      <div key={idx} className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden group">
+                        <div className="aspect-[9/16] relative bg-black overflow-hidden flex items-center justify-center">
+                          <img
+                            src={imgSrc}
+                            alt={`Debug Frame ${idx + 1}`}
+                            className="w-full h-full object-contain group-hover:scale-105 transition-transform"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        </div>
+                        <div className="p-2.5 bg-slate-900/90 border-t border-slate-800">
+                          <p className="text-[11px] font-mono font-semibold text-amber-300 truncate">
+                            {filename}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Generated Clips Gallery */}
             {currentJob && currentJob.clips && currentJob.clips.length > 0 && (

@@ -22,6 +22,7 @@ from src.downloader import download_video_from_url
 from src.transcriber import probe_media, extract_audio, transcribe_audio
 from src.analyzer import analyze_transcript
 from src.editor import render_all_clips
+from src.speaker_tracker import generate_debug_face_detection_frames
 from src.metadata import save_run_metadata
 from src.sample_generator import generate_sample_podcast_video
 from src.utils import logger, sanitize_filename
@@ -47,7 +48,8 @@ def run_pipeline(
     llm_key: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     llm_model: Optional[str] = None,
-    is_sample: bool = False
+    is_sample: bool = False,
+    debug_mode: bool = False
 ):
     if groq_api_key and groq_api_key.strip():
         Settings.GROQ_API_KEY = groq_api_key.strip()
@@ -120,6 +122,13 @@ def run_pipeline(
         "is_landscape": probe_res.is_landscape,
         "fps": probe_res.fps
     })
+
+    debug_frames_list = []
+    if debug_mode:
+        emit_event("progress", {"percent": 30, "stage": "Debug Mode", "message": "Menghasilkan frame debug dengan bounding box wajah & torso..."})
+        debug_dir = output_dir / "debug_frames"
+        debug_filenames = generate_debug_face_detection_frames(video_path, debug_dir)
+        debug_frames_list = debug_filenames
 
     # Step 3: Ekstraksi Audio
     emit_event("progress", {"percent": 35, "stage": "Ekstraksi Audio", "message": "Mengekstrak audio 16kHz mono..."})
@@ -223,6 +232,7 @@ def run_pipeline(
         "run_id": run_id,
         "total_rendered": sum(1 for c in rendered_clips if c.render_success),
         "clips": clips_payload,
+        "debug_frames": debug_frames_list,
         "elapsed_seconds": round(time.time() - run_start_time, 2)
     })
 
@@ -247,6 +257,7 @@ def main():
     parser.add_argument("--llm-base-url", default=None, help="LLM Base URL override")
     parser.add_argument("--llm-model", default=None, help="LLM Model override")
     parser.add_argument("--sample", action="store_true", default=False, help="Gunakan sampel video simulasi")
+    parser.add_argument("--debug", action="store_true", default=False, help="Aktifkan debug mode bounding box wajah")
 
     args = parser.parse_args()
 
@@ -264,7 +275,8 @@ def main():
         llm_key=args.llm_key,
         llm_base_url=args.llm_base_url,
         llm_model=args.llm_model,
-        is_sample=args.sample
+        is_sample=args.sample,
+        debug_mode=args.debug
     )
     sys.exit(exit_code)
 

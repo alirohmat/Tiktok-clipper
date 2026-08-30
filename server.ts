@@ -65,6 +65,7 @@ interface JobState {
   transcriptData?: any;
   analysisData?: any;
   clips?: any[];
+  debugFrames?: string[];
   error?: string;
 }
 
@@ -187,12 +188,14 @@ app.post("/api/generate", (req, res, next) => {
         llmApiKey = "",
         llmBaseUrl = "",
         llmModel = "",
+        debugMode = "false",
       } = req.body || {};
 
     const parsedNumClips = Math.max(1, Math.min(10, parseInt(numClips, 10) || 3));
     const parsedMinDur = Math.max(5, Math.min(120, parseInt(minDuration, 10) || 15));
     const parsedMaxDur = Math.max(parsedMinDur + 5, Math.min(180, parseInt(maxDuration, 10) || 60));
     const burnSubtitles = subtitles === "true" || subtitles === true;
+    const isDebugActive = debugMode === "true" || debugMode === true;
 
     const timestampStr = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14);
     const runId = `run-${timestampStr}-${Math.random().toString(36).substring(2, 6)}`;
@@ -293,6 +296,10 @@ app.post("/api/generate", (req, res, next) => {
       pyArgs.push("--llm-model", llmModel.trim());
     }
 
+    if (isDebugActive) {
+      pyArgs.push("--debug");
+    }
+
 
     const pythonBin = "python3";
     const pyProcess = spawn(pythonBin, pyArgs, {
@@ -338,6 +345,7 @@ app.post("/api/generate", (req, res, next) => {
                 jobState.stage = "Selesai";
                 jobState.endTime = Date.now();
                 jobState.clips = eventData.clips || [];
+                jobState.debugFrames = eventData.debug_frames || [];
                 jobState.message = `Berhasil merender ${eventData.total_rendered || 0} klip!`;
                 jobState.logs.push({
                   timestamp: Date.now(),
@@ -406,8 +414,11 @@ app.get("/api/media/:jobId/:filename", (req, res) => {
   const safeJobId = jobId.replace(/[^a-zA-Z0-9_-]/g, "");
   const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "");
 
-  // Look in clips folder first, then run root folder
+  // Look in clips folder first, then debug_frames, then run root folder
   let targetPath = path.join(OUTPUT_DIR, safeJobId, "clips", safeFilename);
+  if (!fs.existsSync(targetPath)) {
+    targetPath = path.join(OUTPUT_DIR, safeJobId, "debug_frames", safeFilename);
+  }
   if (!fs.existsSync(targetPath)) {
     targetPath = path.join(OUTPUT_DIR, safeJobId, safeFilename);
   }
@@ -425,6 +436,8 @@ app.get("/api/media/:jobId/:filename", (req, res) => {
   else if (ext === ".srt") contentType = "text/plain; charset=utf-8";
   else if (ext === ".json") contentType = "application/json; charset=utf-8";
   else if (ext === ".md") contentType = "text/markdown; charset=utf-8";
+  else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+  else if (ext === ".png") contentType = "image/png";
 
   // Handle Range requests for smooth HTML5 video seeking
   const range = req.headers.range;
