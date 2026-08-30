@@ -172,6 +172,26 @@ def main_cli(
         False,
         "--check",
         help="Jalankan pemeriksaan kesehatan sistem, FFmpeg, dan konfigurasi API"
+    ),
+    llm_provider: Optional[str] = typer.Option(
+        None,
+        "--llm-provider",
+        help="Provider LLM untuk kurasi klip: 'groq', 'openai', 'deepseek', 'openrouter', 'openai_compatible'"
+    ),
+    llm_model: Optional[str] = typer.Option(
+        None,
+        "--llm-model",
+        help="Nama model LLM (misal: deepseek-chat, gpt-4o, gpt-4o-mini, llama-3.3-70b-versatile, dll)"
+    ),
+    llm_base_url: Optional[str] = typer.Option(
+        None,
+        "--llm-base-url",
+        help="Custom Base URL endpoint OpenAI-compatible (misal: https://api.deepseek.com, https://openrouter.ai/api/v1)"
+    ),
+    llm_api_key: Optional[str] = typer.Option(
+        None,
+        "--llm-api-key",
+        help="API Key untuk provider LLM pilihan Anda"
     )
 ):
     """
@@ -179,6 +199,16 @@ def main_cli(
     """
     if debug:
         logger.setLevel(os.environ.get("LOG_LEVEL", "DEBUG"))
+
+    # Update Settings jika CLI option diberikan
+    if llm_provider:
+        Settings.LLM_PROVIDER = llm_provider
+    if llm_model:
+        Settings.LLM_MODEL = llm_model
+    if llm_base_url:
+        Settings.LLM_BASE_URL = llm_base_url
+    if llm_api_key:
+        Settings.LLM_API_KEY = llm_api_key
 
     # Jika opsi --check dipanggil
     if check:

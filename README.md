@@ -1,37 +1,41 @@
-# 🎬 TikTok Clipper (Versi CLI 2026)
+# 🎬 TikTok Clipper (Versi CLI & Web 2026)
 
-Aplikasi CLI Python sederhana, cepat, dan stabil untuk mengubah video panjang (atau tautan URL video) menjadi beberapa klip pendek vertikal TikTok 9:16 yang dipilih secara otomatis oleh AI berdasarkan **Strategi Algoritma TikTok 2026**.
+Aplikasi CLI Python dan Web Studio sederhana, cepat, dan stabil untuk mengubah video panjang (atau tautan URL video) menjadi beberapa klip pendek vertikal TikTok 9:16 yang dipilih secara otomatis oleh AI berdasarkan **Strategi Algoritma TikTok 2026**.
 
 ---
 
 ## 🌟 Fitur Utama
-- **Otomatisasi Penuh**: Mengunduh video (opsional), mengekstrak audio, mentranskripsi dengan Groq Whisper, menganalisis momen terbaik dengan Groq LLM, dan memotong klip dengan FFmpeg.
+- **Otomatisasi Penuh**: Mengunduh video (opsional), mengekstrak audio, mentranskripsi dengan Groq Whisper, menganalisis momen terbaik dengan LLM AI (Groq, DeepSeek, OpenRouter, OpenAI, dll.), dan memotong klip dengan FFmpeg.
 - **Strategi TikTok 2026**:
-  - Deteksi Hook tajam 3 detik pertama.
-  - Prioritas klip berpotensi *high completion rate*, *save-worthy*, dan *share-worthy*.
+  - Deteksi Hook tajam 3 detik pertama (*Extreme Statement, Paradox, Confession, Question, Authority*).
+  - Prioritas klip berpotensi *high completion rate*, *save-worthy*, dan *share-worthy* dengan kelengkapan *Story Arc* (Awal $\rightarrow$ Tengah $\rightarrow$ Akhir).
   - Caption ramah SEO dengan kata kunci di 50 karakter pertama.
   - 3–5 hashtag terarah tanpa simbol `#` (bebas dari hashtag sampah seperti `#fyp`).
   - Saran looping video (*seamless loop*).
   - Call To Action (CTA) natural.
+- **Dukungan Universal LLM (OpenAI-Compatible)**:
+  - Gunakan **Groq** (default, super cepat), **DeepSeek** (`deepseek-chat`, `deepseek-reasoner`), **OpenRouter**, atau **OpenAI** (`gpt-4o`, `gpt-4o-mini`) untuk terbebas dari batasan rate-limit tier gratis.
+- **Smart Speaker Tracking & Anti-Empty-Center Crop (OpenCV + FFmpeg)**:
+  - **`auto`**: Otomatis mendeteksi tipe video (kunci pembicara pada konferensi pers/monolog, atau split layar atas-bawah pada podcast 2 orang).
+  - **`speaker`**: Pelacakan gerak mulut (*Lip Motion Analysis*) untuk mengunci 1 pembicara aktif di tengah keramaian/panggung.
+  - **`split`**: Dual-Speaker Split Screen Vertikal (Atas: Host, Bawah: Tamu) untuk podcast 2 orang. Dilengkapi **Anti-Empty-Center Protection** agar video tidak memotong ruang kosong di antara kedua orang.
+  - **`crop`**: Center crop 1080x1920 klasik.
+  - **`pad`**: Menyesuaikan rasio dengan bar hitam atas-bawah.
+  - **`off`**: Mempertahankan rasio asli video.
 - **Transkrip & Subtitle Presisi**:
   - Menghasilkan file transkrip utuh (`transcript.json`, `transcript.srt`).
   - Menghasilkan file subtitle per klip dengan timestamp relatif.
   - Pilihan membakar subtitle langsung ke video (*hardsub*) atau file terpisah.
-- **Format Vertikal Otomatis (9:16)**:
-  - `auto`: Otomatis center crop video landscape ke 1080x1920.
-  - `crop`: Center crop 1080x1920.
-  - `pad`: Menyesuaikan rasio dengan bar hitam atas-bawah.
-  - `off`: Mempertahankan rasio asli video.
-- **Normalisasi Audio**: Audio diproses dengan standar broadcast EBU R128 (`loudnorm`) agar suara konsisten dan jernih.
-- **Aman Kuota Gratis Groq**: Jeda permintaan berurutan, caching berbasis hash file, dan mekanisme retry otomatis dengan backoff.
-- **Ramah Non-Programmer**: Tampilan terminal interaktif berwarna menggunakan Rich dan skrip `.bat` otomatis untuk pengguna Windows.
+- **Normalisasi Audio**: Audio diproses dengan standar broadcast EBU R128 (`loudnorm -16 LUFS`) agar suara jernih dan konsisten.
+- **Fail-Proof Guarantee**: Dilengkapi *Adaptive Narrative Sizing* dan *Smart Heuristic Fallback* agar proses pemotongan 100% selalu sukses tanpa pernah terhenti di tengah jalan.
 
 ---
 
 ## 📋 Persyaratan Sistem
 1. **Python 3.10+** (Direkomendasikan Python 3.11 atau lebih baru).
 2. **FFmpeg & FFprobe** terpasang di sistem dan terdaftar pada PATH lingkungan.
-3. **Groq API Key** (Dapat dibuat gratis di [https://console.groq.com](https://console.groq.com)).
+3. **Groq API Key** (Dapat dibuat gratis di [https://console.groq.com](https://console.groq.com)) untuk Whisper transkripsi super cepat.
+4. *(Opsional)* **API Key LLM Lain** (DeepSeek, OpenRouter, Together AI, OpenAI) jika ingin analisis LLM yang lebih pintar dan bebas limit.
 
 ---
 
@@ -79,72 +83,43 @@ copy .env.example .env
 cp .env.example .env
 ```
 
-Buka file `.env` dengan teks editor (Notepad/VS Code), lalu masukkan Groq API Key Anda:
+Buka file `.env` dengan teks editor (Notepad/VS Code), lalu masukkan konfigurasi Anda:
 
 ```env
+# API Key untuk Transkripsi Kilat Whisper
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_WHISPER_MODEL=whisper-large-v3
-GROQ_LLM_MODEL=openai/gpt-oss-120b
-FFMPEG_PATH=ffmpeg
-FFPROBE_PATH=ffprobe
-OUTPUT_DIR=output
-CACHE_DIR=cache
-LOG_DIR=logs
+
+# --- Konfigurasi LLM (Pilih salah satu provider): ---
+# 1. Menggunakan Groq (Default)
+LLM_PROVIDER=groq
+LLM_MODEL=llama-3.3-70b-versatile
+
+# 2. ATAU Menggunakan DeepSeek (Rekomendasi Pintar & Hemat Kuota)
+# LLM_PROVIDER=deepseek
+# LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# LLM_BASE_URL=https://api.deepseek.com/v1
+# LLM_MODEL=deepseek-chat
+
+# 3. ATAU Menggunakan OpenRouter
+# LLM_PROVIDER=openrouter
+# LLM_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxx
+# LLM_BASE_URL=https://openrouter.ai/api/v1
+# LLM_MODEL=anthropic/claude-3.5-sonnet
+
+# 4. ATAU Menggunakan OpenAI
+# LLM_PROVIDER=openai
+# LLM_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx
+# LLM_MODEL=gpt-4o-mini
+
+# Konfigurasi Default Clipping
 DEFAULT_MIN_DURATION=15
 DEFAULT_MAX_DURATION=60
 DEFAULT_NUM_CLIPS=3
-DEFAULT_NICHE=umum
+DEFAULT_NICHE=auto
+DEFAULT_VERTICAL_MODE=auto
 ```
-
----
-
-## 🐳 Deployment Berbasis Web Menggunakan Docker
-
-Aplikasi ini telah dilengkapi dengan antarmuka Web Studio Generator serta konfigurasi **Docker & Docker Compose** multi-stage siap pakai untuk deployment di VPS, Cloud VM, atau server lokal.
-
-### 1. Menjalankan dengan Docker Compose (Paling Praktis)
-```bash
-# 1. Pastikan file .env sudah berisi GROQ_API_KEY Anda
-cp .env.example .env
-
-# 2. Build dan jalankan container di latar belakang
-docker compose up -d --build
-
-# 3. Buka Web Studio di browser Anda:
-# http://localhost:3000
-```
-
-Untuk melihat log pemrosesan secara langsung:
-```bash
-docker compose logs -f
-```
-
-Untuk menghentikan container:
-```bash
-docker compose down
-```
-
----
-
-### 2. Menjalankan Langsung dengan Docker CLI
-```bash
-# Build image Docker
-docker build -t tiktok-clipper-web .
-
-# Jalankan container dengan volume persistence dan environment key
-docker run -d \
-  --name tiktok-clipper-app \
-  -p 3000:3000 \
-  -e GROQ_API_KEY="gsk_xxxxxxxxxxxxxxxxxxxx" \
-  -v "$(pwd)/output:/app/output" \
-  -v "$(pwd)/cache:/app/cache" \
-  -v "$(pwd)/logs:/app/logs" \
-  --restart unless-stopped \
-  tiktok-clipper-web
-```
-
-Akses aplikasi web di `http://localhost:3000`.
 
 ---
 
@@ -152,36 +127,101 @@ Akses aplikasi web di `http://localhost:3000`.
 Sebelum memproses video, jalankan diagnosa untuk memastikan semua dependensi siap:
 
 ```bash
+python -m src.cli --check
+# atau
 python main.py --check
 ```
 
 ---
 
-## 💡 Contoh Penggunaan
+## 💡 Panduan Lengkap Penggunaan CLI
 
-### 1. Memotong Video dari File Lokal
+### 1. Perintah Dasar
 ```bash
-python main.py --input "video_podcast.mp4" --niche edukasi --num-clips 3
+# Memotong video dari URL (YouTube / Direct Video Link):
+python -m src.cli --url "https://www.youtube.com/watch?v=XXXXXX" --num-clips 6
+
+# Memotong video dari file lokal di komputer:
+python -m src.cli --input "podcast_episode_1.mp4" --num-clips 5
 ```
 
-### 2. Memotong Video Langsung dari URL (YouTube / TikTok / dll)
+---
+
+### 2. Menggunakan Provider LLM Lain (DeepSeek, OpenRouter, OpenAI, dll.)
+Untuk menghindari limit rate-limit tier Groq dan mendapatkan hasil hook yang lebih berbobot, Anda dapat mengoper parameter LLM langsung lewat CLI:
+
 ```bash
-python main.py --url "https://www.youtube.com/watch?v=XXXXXX" --niche bisnis --num-clips 3
+# Menggunakan DeepSeek Chat:
+python -m src.cli --url "https://youtu.be/..." \
+  --llm-provider deepseek \
+  --llm-model deepseek-chat \
+  --llm-api-key "sk-xxxx..." \
+  --llm-base-url "https://api.deepseek.com/v1"
+
+# Menggunakan OpenRouter:
+python -m src.cli --url "https://youtu.be/..." \
+  --llm-provider openrouter \
+  --llm-model "meta-llama/llama-3.3-70b-instruct" \
+  --llm-api-key "sk-or-v1-xxxx..."
+
+# Menggunakan OpenAI GPT-4o Mini:
+python -m src.cli --url "https://youtu.be/..." \
+  --llm-provider openai \
+  --llm-model gpt-4o-mini \
+  --llm-api-key "sk-proj-xxxx..."
 ```
 
-### 3. Menyesuaikan Durasi Klip & Format Vertikal
-```bash
-# Durasi 30 - 60 detik dengan center crop
-python main.py --input "rekaman.mp4" --min-duration 30 --max-duration 60 --vertical crop
+---
 
-# Mempertahankan rasio asli (tanpa crop vertikal) dan tanpa hardsub:
-python main.py --input "rekaman.mp4" --vertical off --no-subtitles
+### 3. Memilih Mode Crop Vertikal 9:16 (`--vertical`)
+
+| Mode | Kapan Digunakan? | Deskripsi |
+| :--- | :--- | :--- |
+| **`auto`** *(Default)* | Podcast, Konferensi Pers, Interview | AI otomatis mendeteksi: kunci 1 pembicara pada monolog/konferensi pers, atau split atas-bawah pada podcast 2 orang. |
+| **`speaker`** | Konferensi Pers / Monolog Panggung | OpenCV melacak gerak bibir & mengunci 1 pembicara aktif di tengah keramaian. |
+| **`split`** | Podcast 2 Orang (Host & Guest) | Layar dibagi 2 (Atas: Host, Bawah: Tamu) dengan perlindungan anti-ruang kosong. |
+| **`crop`** | Konten Umum / Landscape | Center crop 1080x1920 klasik. |
+| **`pad`** | Video yang tidak ingin terpotong | Menambahkan bar hitam atas-bawah (*Letterbox*). |
+| **`off`** | Mempertahankan rasio asli | Tidak mengubah orientasi video (tetap 16:9 / rasio asal). |
+
+*Contoh Perintah:*
+```bash
+# Mode Split Screen Vertikal untuk podcast 2 orang:
+python -m src.cli --url "https://youtu.be/..." --vertical split --num-clips 4
+
+# Mode Smart Speaker Tracking untuk konferensi pers:
+python -m src.cli --input "konferensi_pers.mp4" --vertical speaker --num-clips 3
 ```
 
-### 4. Mode Analisis Saja (Tanpa Merender Ulang Video)
-Jika Anda hanya ingin membaca rekomendasi hook, caption SEO, dan timestamp tanpa menunggu proses render FFmpeg:
+---
+
+### 4. Menyesuaikan Niche Konten & Durasi Klip
 ```bash
-python main.py --input "podcast.mp4" --analyze-only
+# Menargetkan niche Bisnis dengan durasi 30 - 60 detik:
+python -m src.cli --url "https://youtu.be/..." \
+  --niche bisnis \
+  --min-duration 30 \
+  --max-duration 60 \
+  --num-clips 5
+```
+*Daftar Niche yang Didukung:* `auto` (deteksi otomatis), `umum`, `edukasi`, `bisnis`, `cerita`, `hiburan`, `teknologi`, `kesehatan`, `motivasi`.
+
+---
+
+### 5. Opsi Tambahan CLI
+
+```bash
+# Mode Analisis Saja (Dapatkan timestamp, hook, & caption tanpa menunggu render video FFmpeg):
+python -m src.cli --input "podcast.mp4" --analyze-only
+
+# Matikan pembakaran subtitle ke video (hanya simpan file .srt terpisah):
+python -m src.cli --input "podcast.mp4" --no-subtitles
+
+# Tentukan folder output kustom:
+python -m src.cli --input "podcast.mp4" --output-dir "my_tiktok_clips"
+
+# Mode Debug Log:
+python -m src.cli --input "podcast.mp4" --debug
 ```
 
 ---
@@ -190,22 +230,22 @@ python main.py --input "podcast.mp4" --analyze-only
 Setiap proses pemotongan akan membuat folder khusus di dalam direktori `output/`:
 
 ```text
-output/2026-08-28_20-15_judul-video/
+output/2026-08-30_07-15_url-video/
   ├── source/
   │   └── source_video.mp4      <- Video sumber asli
   ├── audio/
-  │   └── audio.m4a             <- Audio 16kHz mono yang diekstrak
+  │   └── audio.mp3             <- Audio 16kHz mono yang diekstrak
   ├── transcript/
   │   ├── transcript.json       <- Transkrip utuh dengan stempel waktu per segmen
   │   └── transcript.srt        <- Subtitle SRT keseluruhan video
   ├── analysis/
-  │   └── analysis.json         <- Hasil analisis detail AI Groq LLM
+  │   └── analysis.json         <- Hasil analisis detail AI LLM (Hook, Retensi, Alasan)
   ├── clips/
   │   ├── 01-hook-utama.mp4     <- Klip video hasil potongan vertikal 9:16
   │   ├── 01-hook-utama.srt     <- Subtitle relatif khusus klip 1
-  │   ├── 01-hook-utama.json    <- Metadata klip (hook, caption, hashtags, CTA)
+  │   ├── 01-hook-utama.json    <- Metadata klip (hook, caption SEO, hashtags, CTA)
   │   └── 02-tips-bisnis.mp4
-  ├── summary.md                <- Dokumen ringkasan lengkap untuk di-copy ke TikTok
+  ├── summary.md                <- Dokumen ringkasan lengkap siap salin ke TikTok
   └── manifest.json             <- Catatan log pemrosesan teknis
 ```
 
@@ -216,9 +256,8 @@ output/2026-08-28_20-15_judul-video/
 | Masalah | Penyebab | Solusi Praktis |
 | :--- | :--- | :--- |
 | **`FFmpeg CLI: Tidak Ditemukan`** | FFmpeg belum terinstal atau belum masuk PATH | Instal FFmpeg, lalu tambahkan folder `bin` ke System PATH. Restart terminal. |
-| **`GROQ_API_KEY belum diisi`** | Nilai API key kosong di file `.env` | Buat API key gratis di [console.groq.com](https://console.groq.com) lalu simpan di `.env`. |
-| **`Video tidak memiliki stream audio`** | Video sumber tidak memiliki rekaman suara | Gunakan video yang memiliki suara percakapan jelas. |
-| **`Rate Limit 429 dari Groq`** | Kuota request gratis per menit tercapai | Aplikasi otomatis melakukan retry dengan jeda. Jika tetap terjadi, tunggu 1-2 menit lalu ulangi. |
+| **`Rate Limit 429 dari Groq`** | Kuota request token gratis Groq tercapai | Gunakan provider lain dengan opsi `--llm-provider deepseek` atau `--llm-provider openrouter` di CLI / `.env`. |
+| **`Video 2 Orang Terpotong di Tengah`** | Ruang kosong antara 2 orang terpotong oleh center crop | Gunakan mode `--vertical split` atau `--vertical auto`. Sistem otomatis membagi layar atas-bawah tanpa memotong ruang kosong di tengah. |
 | **`Gagal mengunduh URL`** | Video privat, butuh login, atau pembatasan bot | Unduh video secara manual melalui browser, lalu gunakan flag `--input "file.mp4"`. |
 | **`Subtitle gagal dibakar ke video`** | FFmpeg belum dikompilasi dengan pustaka `libass` | Aplikasi akan otomatis beralih ke video bersih dan tetap menyimpan file `.srt` terpisah di folder `clips/`. |
 
@@ -233,3 +272,4 @@ output/2026-08-28_20-15_judul-video/
 
 ## 📜 Lisensi
 Lisensi MIT. Bebas digunakan dan dimodifikasi untuk kebutuhan konten kreator dan tim editorial.
+

@@ -183,70 +183,97 @@ def detect_speakers_in_clip(
             return SpeakerTrackingResult(dominant_x_ratio=0.5, speakers_detected=1, confidence=0.3)
 
         # -------------------------------------------------------------
-        # Logika Deteksi: Konferensi Pers / Monolog vs Podcast 2 Orang
+        # Logika Deteksi: Konferensi Pers / Monolog vs Podcast 2 Orang (Wide Shot)
         # -------------------------------------------------------------
         # Pada Konferensi Pers: Sering ada 3+ orang di panggung/meja, tapi HANYA 1 yang berbicara aktif di mic.
-        # Pada Podcast 2 Orang: Ada 2 klaster terpisah (kiri & kanan) yang bergantian berbicara.
+        # Pada Podcast 2 Orang: Ada 2 klaster terpisah (kiri & kanan) yang bergantian berbicara atau tampil 2-shot.
         is_crowd_or_press_conf = (max_faces_in_single_frame >= 3)
 
         # Kelompokkan deteksi wajah ke klaster horizontal (Kiri, Tengah, Kanan)
-        left_weights = sum(w for _, cx, w in detected_face_centers if cx < 0.40)
-        center_weights = sum(w for _, cx, w in detected_face_centers if 0.40 <= cx <= 0.60)
-        right_weights = sum(w for _, cx, w in detected_face_centers if cx > 0.60)
+        left_weights = sum(w for _, cx, w in detected_face_centers if cx < 0.42)
+        center_weights = sum(w for _, cx, w in detected_face_centers if 0.42 <= cx <= 0.58)
+        right_weights = sum(w for _, cx, w in detected_face_centers if cx > 0.58)
 
         left_avg = float(np.median(left_speaker_faces)) if left_speaker_faces else 0.25
         right_avg = float(np.median(right_speaker_faces)) if right_speaker_faces else 0.75
         center_avg = float(np.median(center_speaker_faces)) if center_speaker_faces else 0.5
 
-        # Split screen HANYA jika murni podcast 2 orang (bukan konferensi pers ramai)
-        # dan kedua sisi memiliki aktivitas bicara yang seimbang
-        has_active_left = len(left_speaker_faces) >= 3 and left_weights > 0.2 * (left_weights + right_weights + center_weights)
-        has_active_right = len(right_speaker_faces) >= 3 and right_weights > 0.2 * (left_weights + right_weights + center_weights)
+        # Deteksi apakah video merupakan Wide Shot 2 Orang (Podcast Two-Shot)
+        # di mana ada orang di kiri dan kanan, tetapi bagian tengah kosong
+        is_two_shot_podcast = (
+            not is_crowd_or_press_conf and
+            len(left_speaker_faces) >= 2 and
+            len(right_speaker_faces) >= 2 and
+            len(center_speaker_faces) <= 1
+        )
+
+        # Split screen otomatis aktif jika:
+        # 1. Terdeteksi 2 orang aktif di kiri & kanan (podcast wide shot), ATAU
+        # 2. Kedua sisi memiliki porsi bobot yang signifikan
+        has_active_left = len(left_speaker_faces) >= 2 and (left_weights > 0.15 * (left_weights + right_weights + center_weights))
+        has_active_right = len(right_speaker_faces) >= 2 and (right_weights > 0.15 * (left_weights + right_weights + center_weights))
         
-        is_split = (not is_crowd_or_press_conf) and has_active_left and has_active_right
+        is_split = (not is_crowd_or_press_conf) and (is_two_shot_podcast or (has_active_left and has_active_right))
 
-        # Tentukan posisi X pembicara tunggal yang paling dominan (Active Monologue / Press Speaker)
-        # Cari klaster dengan skor bobot tertinggi
-        cluster_scores = [
-            (center_avg, center_weights, "center"),
-            (left_avg, left_weights, "left"),
-            (right_avg, right_weights, "right"),
-        ]
-        dominant_cluster_x, dominant_score, cluster_name = max(cluster_scores, key=lambda c: c[1])
-
-        if is_crowd_or_press_conf:
+        # Tentukan posisi X pembicara tunggal (jika single-cam digunakan)
+        # JANGAN PERNAH mengambil rata-rata aritmatika kiri dan kanan karena akan jatuh ke ruang kosong di tengah!
+        if is_two_shot_podcast or (len(left_speaker_faces) >= 2 and len(right_speaker_faces) >= 2):
+            # Pada video 2 orang, pilih salah satu pembicara yang paling aktif
+            if left_weights >= right_weights:
+                weighted_cx = left_avg
+                logger.info(f"🎙️ Podcast 2 Orang (Wide Shot): Mengunci Host/Speaker Kiri di X={left_avg:.2f} (Bobot={left_weights:.1f} vs Kanan={right_weights:.1f})")
+            else:
+                weighted_cx = right_avg
+                logger.info(f"🎙️ Podcast 2 Orang (Wide Shot): Mengunci Guest/Speaker Kanan di X={right_avg:.2f} (Bobot={right_weights:.1f} vs Kiri={left_weights:.1f})")
+        elif is_crowd_or_press_conf:
+            cluster_scores = [
+                (center_avg, center_weights, "center"),
+                (left_avg, left_weights, "left"),
+                (right_avg, right_weights, "right"),
+            ]
+            dominant_cluster_x, dominant_score, cluster_name = max(cluster_scores, key=lambda c: c[1])
             logger.info(
                 f"🎤 Terdeteksi Konferensi Pers / Keramaian ({max_faces_in_single_frame} wajah terdeteksi). "
                 f"Mengunci pembicara monolog aktif di klaster '{cluster_name}' (X={dominant_cluster_x:.2f})."
             )
             weighted_cx = dominant_cluster_x
-            is_split = False  # Jangan split pada konferensi pers!
-        elif is_split:
-            # Jika 2 pembicara podcast aktif tapi mode single dipilih
-            if left_weights >= right_weights * 1.3:
+            is_split = False
+        else:
+            # Monolog 1 orang di tengah / sudut tertentu
+            if center_speaker_faces:
+                weighted_cx = center_avg
+            elif left_speaker_faces and not right_speaker_faces:
                 weighted_cx = left_avg
-            elif right_weights >= left_weights * 1.3:
+            elif right_speaker_faces and not left_speaker_faces:
                 weighted_cx = right_avg
             else:
-                dominant_face = max(detected_face_centers, key=lambda item: item[2])
-                weighted_cx = dominant_face[1]
-        else:
-            # Monolog 1 orang biasa
-            total_weight = sum(w for _, _, w in detected_face_centers)
-            if total_weight > 0:
-                weighted_cx = sum(cx * w for _, cx, w in detected_face_centers) / total_weight
+                total_weight = sum(w for _, _, w in detected_face_centers)
+                if total_weight > 0:
+                    weighted_cx = sum(cx * w for _, cx, w in detected_face_centers) / total_weight
+                else:
+                    weighted_cx = 0.5
+
+        # PERLINDUNGAN ANTI-EMPTY-CENTER:
+        # Jika hasil weighted_cx jatuh di area tengah (0.42 - 0.58) PADAHAL di tengah TIDAK ADA wajah
+        # dan ada wajah jelas di kiri & kanan, paksa pilih klaster dengan bobot terbesar
+        if (0.42 <= weighted_cx <= 0.58) and len(center_speaker_faces) == 0 and (left_speaker_faces or right_speaker_faces):
+            logger.warning(f"⚠️ Terdeteksi jebakan tengah kosong (X={weighted_cx:.2f}). Menghindari pemotongan ruang kosong...")
+            if left_weights >= right_weights and left_speaker_faces:
+                weighted_cx = left_avg
+            elif right_speaker_faces:
+                weighted_cx = right_avg
             else:
-                weighted_cx = dominant_cluster_x
+                weighted_cx = left_avg
 
         # Batasi posisi X agar crop 9:16 tetap aman di dalam frame (margin 0.18 - 0.82)
         weighted_cx = max(0.18, min(0.82, weighted_cx))
 
         return SpeakerTrackingResult(
             dominant_x_ratio=float(weighted_cx),
-            speakers_detected=max_faces_in_single_frame if max_faces_in_single_frame > 1 else (2 if is_split else 1),
+            speakers_detected=2 if (is_split or is_two_shot_podcast) else (max_faces_in_single_frame if max_faces_in_single_frame > 1 else 1),
             speaker_left_x=max(0.15, min(0.45, left_avg)),
             speaker_right_x=max(0.55, min(0.85, right_avg)),
-            confidence=0.90 if len(detected_face_centers) >= 5 else 0.6,
+            confidence=0.92 if len(detected_face_centers) >= 4 else 0.6,
             is_split_recommended=is_split,
             trajectory=[(t, cx) for t, cx, _ in detected_face_centers]
         )

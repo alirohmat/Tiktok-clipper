@@ -33,61 +33,82 @@ from src.utils import calculate_file_hash, get_cache, logger, sanitize_filename,
 def _call_universal_llm(
     system_prompt: str,
     user_prompt: str,
+    override_model: Optional[str] = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Memanggil LLM (OpenAI, DeepSeek, OpenRouter, Groq, atau OpenAI-compatible endpoint lainnya).
-    Menggunakan retry dan fallback yang tangguh.
+    Menggunakan retry cerdas, Groq model auto-tiering, dan fallback yang tangguh.
     """
     provider, api_key, base_url, model = Settings.resolve_effective_llm_config()
+    if override_model:
+        model = override_model
 
     if not api_key:
         return None, "API Key LLM belum dikonfigurasi. Silakan masukkan OpenAI API Key atau Groq API Key."
 
     logger.info(f"Mengirim analisis ke LLM [Provider: {provider} | Model: {model}]...")
 
-    # Strategi 1: Jika provider adalah groq dan tidak ada custom base_url, gunakan Groq SDK jika tersedia
+    # Strategi 1: Jika provider adalah groq dan tidak ada custom base_url, gunakan Groq SDK
     if provider == "groq" and not base_url:
         try:
-            from groq import Groq, RateLimitError, APIConnectionError, APIStatusError
+            from groq import Groq, RateLimitError
             client = Groq(api_key=api_key)
-            for attempt in range(3):
-                try:
-                    chat_completion = client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.2,
-                        response_format={"type": "json_object"}
-                    )
-                    content = chat_completion.choices[0].message.content
-                    time.sleep(1.5)
-                    return content, None
-                except RateLimitError:
-                    wait_s = (attempt + 1) * 3
-                    logger.warning(f"Groq Rate Limit (429). Menunggu {wait_s}s...")
-                    time.sleep(wait_s)
-                except Exception as e:
-                    if attempt == 2:
-                        raise e
-                    time.sleep(2)
+            models_to_try = [model]
+            if model != "llama-3.1-8b-instant":
+                # Tambahkan 8b-instant sebagai fallback jika 70b terkena rate limit
+                models_to_try.append("llama-3.1-8b-instant")
+
+            for cur_model in models_to_try:
+                for attempt in range(3):
+                    try:
+                        chat_completion = client.chat.completions.create(
+                            model=cur_model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.2,
+                            response_format={"type": "json_object"}
+                        )
+                        content = chat_completion.choices[0].message.content
+                        time.sleep(1.0)
+                        return content, None
+                    except RateLimitError as rle:
+                        wait_s = (attempt + 1) * 4
+                        logger.warning(f"Groq Rate Limit ({cur_model}) [Attempt {attempt+1}/3]. Menunggu {wait_s}s...")
+                        time.sleep(wait_s)
+                    except Exception as e:
+                        err_str = str(e)
+                        if "rate" in err_str.lower() or "429" in err_str:
+                            time.sleep(3)
+                            continue
+                        logger.warning(f"Groq {cur_model} error: {e}")
+                        break
         except ImportError:
             pass
         except Exception as ex:
             logger.warning(f"Groq SDK call error: {ex}, beralih ke HTTP fallback...")
 
-    # Strategi 2: Jika OpenAI SDK terpasang, gunakan OpenAI client
+    # Tentukan base_url & endpoint yang tepat sesuai provider jika belum disetel
+    if not base_url:
+        if provider == "groq":
+            effective_base_url = "https://api.groq.com/openai/v1"
+        elif provider == "deepseek":
+            effective_base_url = "https://api.deepseek.com/v1"
+        elif provider == "openrouter":
+            effective_base_url = "https://openrouter.ai/api/v1"
+        else:
+            effective_base_url = "https://api.openai.com/v1"
+    else:
+        effective_base_url = base_url.rstrip("/")
+
+    # Strategi 2: Jika OpenAI SDK terpasang, gunakan OpenAI client dengan endpoint yang sesuai
     try:
         from openai import OpenAI
-        client_kwargs: Dict[str, Any] = {"api_key": api_key}
-        if base_url:
-            client_kwargs["base_url"] = base_url.rstrip("/")
-        client = OpenAI(**client_kwargs)
+        client = OpenAI(api_key=api_key, base_url=effective_base_url)
 
         for attempt in range(3):
             try:
-                # Coba dengan json_object response format
                 try:
                     chat_completion = client.chat.completions.create(
                         model=model,
@@ -99,7 +120,6 @@ def _call_universal_llm(
                         response_format={"type": "json_object"}
                     )
                 except Exception:
-                    # Beberapa model mungkin belum support response_format json_object, fallback ke standard
                     chat_completion = client.chat.completions.create(
                         model=model,
                         messages=[
@@ -116,7 +136,7 @@ def _call_universal_llm(
                     time.sleep((attempt + 1) * 3)
                     continue
                 if attempt == 2:
-                    return None, f"OpenAI/LLM Error: {err_str[:250]}"
+                    break
                 time.sleep(2)
     except ImportError:
         pass
@@ -124,7 +144,7 @@ def _call_universal_llm(
         logger.warning(f"OpenAI SDK error: {ex}, mencoba HTTP request langsung...")
 
     # Strategi 3: Universal HTTP REST call ke standard /chat/completions
-    endpoint = f"{base_url.rstrip('/')}/chat/completions" if base_url else "https://api.openai.com/v1/chat/completions"
+    endpoint = f"{effective_base_url}/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
@@ -224,16 +244,35 @@ def detect_podcast_context(
 
 def chunk_segments(
     segments: List[Segment],
-    max_chars: int = 8000,
-    max_segments: int = 80,
+    max_chars: Optional[int] = None,
+    max_segments: Optional[int] = None,
     overlap: int = 2
 ) -> List[List[Segment]]:
     """
-    Memecah daftar segmen menjadi potongan (chunks) yang tidak melebihi batas karakter dan jumlah segmen.
-    Menggunakan overlap 2 segmen antar chunk agar konteks percakapan tidak terputus.
+    Memecah daftar segmen menjadi potongan (chunks) dengan ukuran adaptif agar
+    tetap efisien terhadap kuota token API dan mempertahankan kelengkapan Story Arc TikTok 2026.
     """
     if not segments:
         return []
+
+    # Sizing adaptif berdasarkan panjang transkrip
+    total_segs = len(segments)
+    if max_chars is None or max_segments is None:
+        if total_segs > 800:
+            # Video panjang (>45 menit): Gunakan 4-6 babak besar yang padat konteks
+            effective_max_chars = 14000
+            effective_max_segments = 160
+        elif total_segs > 300:
+            # Video sedang (15-45 menit)
+            effective_max_chars = 10000
+            effective_max_segments = 110
+        else:
+            # Video pendek (<15 menit)
+            effective_max_chars = 7500
+            effective_max_segments = 80
+    else:
+        effective_max_chars = max_chars
+        effective_max_segments = max_segments
 
     chunks: List[List[Segment]] = []
     current_chunk: List[Segment] = []
@@ -245,7 +284,7 @@ def chunk_segments(
         seg_len = len(seg.text) + 30  # Estimasi panjang teks + ID dan timestamp
 
         # Jika chunk melebihi batas, simpan chunk saat ini
-        if current_chunk and (current_chars + seg_len > max_chars or len(current_chunk) >= max_segments):
+        if current_chunk and (current_chars + seg_len > effective_max_chars or len(current_chunk) >= effective_max_segments):
             chunks.append(current_chunk)
             # Geser indeks mundur sebanyak overlap untuk chunk berikutnya
             step_back = max(1, len(current_chunk) - overlap)
@@ -260,7 +299,7 @@ def chunk_segments(
     if current_chunk and (not chunks or current_chunk != chunks[-1]):
         chunks.append(current_chunk)
 
-    logger.info(f"Transkrip ({len(segments)} segmen) dibagi menjadi {len(chunks)} chunk analisis.")
+    logger.info(f"Transkrip ({len(segments)} segmen) dibagi menjadi {len(chunks)} babak analisis narasi.")
     return chunks
 
 
